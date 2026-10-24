@@ -1,0 +1,813 @@
+// =============================================================
+// ContractorFlow — Prisma Schema
+// Full database schema for Phase 1 (SaaS-ready from day 1)
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================
+// ENUMS
+// =============================================================
+
+enum UserRole {
+  SUPER_ADMIN   // Platform admin (future SaaS)
+  ORG_ADMIN     // Organization owner/admin
+  ORG_MANAGER   // Can approve works & issue invoices
+  ORG_STAFF     // Can register works, view
+}
+
+enum ClientType {
+  INDIVIDUAL
+  COMPANY
+  GOVERNMENT
+}
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SiteStatus {
+  ACTIVE
+  COMPLETED
+  ON_HOLD
+  CANCELLED
+}
+
+enum WorkEntryStatus {
+  DRAFT           // Saved, not submitted for approval
+  PENDING_APPROVAL // Submitted, waiting for approval
+  APPROVED        // Approved, eligible for statement/invoice
+  REJECTED        // Rejected, needs correction
+  PARTIALLY_BILLED // Part of quantity has been invoiced
+  FULLY_BILLED    // All quantity has been invoiced
+}
+
+enum StatementStatus {
+  DRAFT
+  APPROVED
+  INVOICED       // A full invoice was created from it
+  PARTIALLY_INVOICED
+  CANCELLED
+}
+
+enum InvoiceType {
+  TAX_INVOICE          // فاتورة ضريبية
+  SIMPLIFIED_TAX_INVOICE // فاتورة ضريبية مبسطة
+  CREDIT_NOTE          // إشعار دائن
+  DEBIT_NOTE           // إشعار مدين
+}
+
+enum InvoiceStatus {
+  DRAFT
+  APPROVED        // Locked, ready to send
+  SENT
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHEQUE
+  CARD
+  OTHER
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  APPROVE
+  REJECT
+  CANCEL
+  DELETE
+  LOGIN
+  LOGOUT
+  PAYMENT_RECORD
+  ISSUE_INVOICE
+  ISSUE_STATEMENT
+  SETTINGS_UPDATE
+  USER_MANAGE
+  RESET_TEST_LOGS
+}
+
+enum ZatcaStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  CLEARED       // Phase 2: cleared by ZATCA
+  REPORTED      // Phase 2: reported to ZATCA
+  ERROR
+  REJECTED_BY_ZATCA
+}
+
+// =============================================================
+// ORGANIZATION (Multi-tenancy root)
+// =============================================================
+
+model Organization {
+  id          String   @id @default(cuid())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  isActive    Boolean  @default(true)
+
+  // Relations
+  settings    OrgSettings?
+  countries   OrgCountry[]
+  bankAccounts OrgBankAccount[]
+  unitsOfMeasure UnitOfMeasure[]
+  users       User[]
+  clients     Client[]
+  workItemTemplates WorkItemTemplate[]
+  sites       Site[]
+  workEntries WorkEntry[]
+  statements  Statement[]
+  invoices    Invoice[]
+  payments    Payment[]
+  auditLogs   AuditLog[]
+  documentSequences DocumentSequence[]
+
+  @@map("organizations")
+}
+
+// =============================================================
+// ORG SETTINGS (stored as snapshot in documents)
+// =============================================================
+
+model OrgSettings {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  // Business Identity
+  businessName       String?
+  businessNameEn     String?
+  logoUrl            String?
+  address            String?
+  addressEn          String?
+  city               String?
+  country            String  @default("SA")
+  phone              String?
+  email              String?
+  website            String?
+
+  // Tax / Legal
+  vatNumber          String?  // الرقم الضريبي
+  commercialReg      String?  // السجل التجاري
+  vatRate            Decimal  @default(15) @db.Decimal(5, 2) // 15% VAT default
+
+  // Localization
+  defaultLanguage    String   @default("ar")
+  defaultCurrency    String   @default("SAR")
+  dateFormat         String   @default("DD/MM/YYYY")
+
+  // Document Numbering Prefixes
+  invoicePrefix      String   @default("INV")
+  statementPrefix    String   @default("STM")
+  workEntryPrefix    String   @default("WRK")
+
+  // Approval Settings
+  selfApprovalAllowed Boolean @default(true) // single user can approve own work
+
+  // ZATCA Phase 2 Integration
+  zatcaEnvironment       String?   @default("sandbox") // 'sandbox' | 'simulation' | 'production'
+  zatcaEnabled           Boolean   @default(false)
+  zatcaCsid              String?   // Production CSID (Base64)
+  zatcaSecret            String?   // Production Secret
+  zatcaComplianceCsid    String?   // Compliance CSID (Base64)
+  zatcaComplianceSecret  String?   // Compliance Secret
+  zatcaComplianceReqId   String?   // Compliance Request ID
+  zatcaProductionReqId   String?   // Production Request ID
+  zatcaOnboardingStatus  String?   @default("NOT_ONBOARDED") // 'NOT_ONBOARDED' | 'COMPLIANCE_PENDING' | 'COMPLIANCE_PASSED' | 'ONBOARDED' | 'ACTIVE'
+  zatcaCertExpiry        DateTime? // CSID expiration date
+  zatcaLastSync          DateTime? // Last communication with ZATCA
+  zatcaEgsUuid           String?   // EGS Solution UUID
+
+  // Branding
+  primaryColor       String   @default("#1a56db")
+  secondaryColor     String   @default("#0e9f6e")
+
+  // Audit Retention Policy
+  auditRetentionDays   Int      @default(90)
+  autoCleanupAuditLogs Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("org_settings")
+}
+
+// =============================================================
+// MULTI-COUNTRY CONFIGURATION
+// =============================================================
+
+model OrgCountry {
+  id                   String       @id @default(cuid())
+  organizationId       String
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Standard Identifiers (ISO 3166-1 alpha-2)
+  countryCode          String       // 'SA', 'AE', 'KW', 'BH', 'QA', 'OM', 'EG', 'JO', 'US', 'GB', etc.
+  nameAr               String       // e.g. "المملكة العربية السعودية"
+  nameEn               String       // e.g. "Saudi Arabia"
+
+  isDefault            Boolean      @default(false)
+  isActive             Boolean      @default(true)
+
+  // Standard Currency (ISO 4217)
+  currencyCode         String       @default("SAR") // 'SAR', 'AED', 'KWD', 'USD', etc.
+  currencyNameAr       String       @default("ريال سعودي")
+  currencyNameEn       String       @default("Saudi Riyal")
+  currencySymbol       String       @default("ر.س")
+
+  // Tax & Legal Configuration
+  taxNumber            String?      // VAT / TRN / Tax ID number
+  taxNumberLabelAr     String       @default("الرقم الضريبي")
+  taxNumberLabelEn     String       @default("Tax Identification Number (VAT)")
+  standardTaxRate      Decimal      @default(15) @db.Decimal(5, 2) // Percentage rate (e.g. 15.00 for SA, 5.00 for AE)
+  commercialReg        String?      // Business registration / Commercial registration
+  commercialRegLabelAr String       @default("السجل التجاري")
+  commercialRegLabelEn String       @default("Commercial Registration")
+
+  // Regional & Localization Settings
+  timezone             String       @default("Asia/Riyadh")
+  dateFormat           String       @default("DD/MM/YYYY")
+  phoneCode            String?      @default("+966")
+
+  // E-Invoicing & Regulatory Status
+  electronicInvoicingStatus String   @default("STANDARD") // 'ZATCA_PHASE_2' for SA, 'STANDARD' for others
+  notes                String?
+
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@unique([organizationId, countryCode])
+  @@map("org_countries")
+}
+
+// =============================================================
+// COMPANY RECEIVING BANK ACCOUNTS
+// =============================================================
+
+model OrgBankAccount {
+  id                String       @id @default(cuid())
+  organizationId    String
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  bankNameAr        String       // e.g. "البنك الأهلي السعودي"
+  bankNameEn        String       // e.g. "Saudi National Bank (SNB)"
+  beneficiaryNameAr String       // e.g. "شركة بنيان للمقاولات العامة"
+  beneficiaryNameEn String       // e.g. "BUNYAN GENERAL CONTRACTING CO."
+  iban              String       // e.g. "SA0310000000000000000000"
+  accountNumber     String?      // Optional bank account number
+  currency          String       @default("SAR")
+  branch            String?      // Optional branch name
+  swiftCode         String?      // Optional SWIFT/BIC code
+
+  isDefault         Boolean      @default(false)
+  isActive          Boolean      @default(true)
+  notes             String?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  // Relations
+  payments          Payment[]
+
+  @@unique([organizationId, iban])
+  @@map("org_bank_accounts")
+}
+
+// =============================================================
+// DOCUMENT SEQUENCES (auto-numbering per org)
+// =============================================================
+
+model DocumentSequence {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  docType        String   // 'invoice' | 'statement' | 'work_entry'
+  prefix         String
+  lastNumber     Int      @default(0)
+  yearReset      Boolean  @default(true) // reset counter each year
+  currentYear    Int      @default(2024)
+
+  @@unique([organizationId, docType])
+  @@map("document_sequences")
+}
+
+// =============================================================
+// USERS
+// =============================================================
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  email          String
+  passwordHash   String
+  nameAr         String
+  nameEn         String?
+  role           UserRole @default(ORG_STAFF)
+  permissions    String[] @default([])
+  isActive       Boolean  @default(true)
+  lastLoginAt    DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  createdWorkEntries  WorkEntry[] @relation("WorkEntryCreator")
+  approvedWorkEntries WorkEntry[] @relation("WorkEntryApprover")
+  createdStatements Statement[] @relation("StatementCreator")
+  approvedStatements Statement[] @relation("StatementApprover")
+  createdInvoices Invoice[] @relation("InvoiceCreator")
+  payments        Payment[]
+  auditLogs       AuditLog[]
+
+  @@unique([organizationId, email])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  requestedIp String?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// =============================================================
+// CLIENTS
+// =============================================================
+
+model Client {
+  id             String     @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  nameAr         String
+  nameEn         String?
+  clientType     ClientType @default(COMPANY)
+  phone          String?
+  email          String?
+  address        String?
+  vatNumber      String?
+  notes          String?
+  status         ClientStatus @default(ACTIVE)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  sites       Site[]
+  statements  Statement[]
+  invoices    Invoice[]
+  payments    Payment[]
+  workEntries WorkEntry[]
+
+  @@map("clients")
+}
+
+// =============================================================
+// SITES (Work Locations)
+// =============================================================
+
+model Site {
+  id             String     @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  clientId       String
+  client         Client     @relation(fields: [clientId], references: [id])
+
+  nameAr         String
+  nameEn         String?
+  address        String?
+  googleMapsUrl  String?
+  description    String?
+  referenceNo    String?    // project/contract reference
+  startDate      DateTime?
+  endDate        DateTime?
+  status         SiteStatus @default(ACTIVE)
+  notes          String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workEntries WorkEntry[]
+  statementSites StatementSite[]
+
+  @@map("sites")
+}
+
+// =============================================================
+// UNITS OF MEASUREMENT (Configurable construction units)
+// =============================================================
+
+model UnitOfMeasure {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  code           String       // e.g. 'SQM', 'CBM', 'LM', 'PCS', 'KG', 'TON', 'LTR', 'HR', 'DAY', 'LUMP_SUM', 'BAG', 'SET'
+  nameAr         String       // e.g. 'متر مربع'
+  nameEn         String       // e.g. 'Square Meter'
+  symbolAr       String       // e.g. 'م²'
+  symbolEn       String       // e.g. 'm²'
+  category       String?      // 'AREA', 'VOLUME', 'LENGTH', 'COUNT', 'WEIGHT', 'TIME', 'SERVICE'
+  isDefault      Boolean      @default(false)
+  isActive       Boolean      @default(true)
+  sortOrder      Int          @default(0)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  workItemTemplates WorkItemTemplate[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, symbolAr])
+  @@map("units_of_measure")
+}
+
+// =============================================================
+// WORK ITEM TEMPLATES (Library of reusable work items)
+// =============================================================
+
+model WorkItemTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  code           String?  // optional short code
+  nameAr         String
+  nameEn         String?
+  descriptionAr  String?
+  descriptionEn  String?
+  unit           String   // e.g., م², م, قطعة, ساعة ...
+  unitEn         String?
+  unitOfMeasureId String?
+  unitOfMeasure   UnitOfMeasure? @relation(fields: [unitOfMeasureId], references: [id], onDelete: SetNull)
+  defaultPrice   Decimal? @db.Decimal(18, 4)
+  isActive       Boolean  @default(true)
+  notes          String?
+  sortOrder      Int      @default(0)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  workEntries WorkEntry[]
+
+  @@unique([organizationId, code], name: "unique_org_code")
+  @@map("work_item_templates")
+}
+
+// =============================================================
+// WORK ENTRIES (Core entity — actual work performed)
+// =============================================================
+
+model WorkEntry {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  clientId       String
+  client         Client          @relation(fields: [clientId], references: [id])
+  siteId         String
+  site           Site            @relation(fields: [siteId], references: [id])
+
+  // Reference number (auto-generated)
+  referenceNo    String
+
+  // Work Item (snapshot at time of entry — not linked to live template)
+  workItemTemplateId String?
+  workItemTemplate   WorkItemTemplate? @relation(fields: [workItemTemplateId], references: [id])
+
+  // Snapshot data (frozen at time of entry)
+  itemNameAr     String
+  itemNameEn     String?
+  itemDescAr     String?
+  itemDescEn     String?
+  unit           String
+  unitEn         String?
+
+  // Quantities & Pricing
+  quantity       Decimal         @db.Decimal(18, 4)
+  unitPrice      Decimal         @db.Decimal(18, 4)
+  totalAmount    Decimal         @db.Decimal(18, 4) // quantity * unitPrice, computed & stored
+
+  // Billed tracking
+  billedQuantity Decimal         @default(0) @db.Decimal(18, 4)
+
+  // Dates
+  workDate       DateTime        @db.Date
+  periodStart    DateTime?       @db.Date
+  periodEnd      DateTime?       @db.Date
+
+  // Status & Workflow
+  status         WorkEntryStatus @default(DRAFT)
+  notes          String?
+
+  // Audit trail
+  createdById    String
+  createdBy      User            @relation("WorkEntryCreator", fields: [createdById], references: [id])
+  approvedById   String?
+  approvedBy     User?           @relation("WorkEntryApprover", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectionReason String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  statementLines StatementLine[]
+  invoiceLines   InvoiceLine[]
+
+  @@unique([organizationId, referenceNo])
+  @@map("work_entries")
+}
+
+// =============================================================
+// STATEMENTS (المستخلصات)
+// =============================================================
+
+model Statement {
+  id             String          @id @default(cuid())
+  organizationId String
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  clientId       String
+  client         Client          @relation(fields: [clientId], references: [id])
+
+  referenceNo    String
+  title          String?
+
+  issueDate      DateTime        @db.Date
+  periodStart    DateTime?       @db.Date
+  periodEnd      DateTime?       @db.Date
+
+  // Org data snapshot (frozen at issue time)
+  orgSnapshot    Json            // OrgSettings at time of issue
+
+  // Financials (computed & stored for immutability)
+  subtotal       Decimal         @db.Decimal(18, 4)
+  discountAmount Decimal         @default(0) @db.Decimal(18, 4)
+  taxableAmount  Decimal         @db.Decimal(18, 4)
+  vatRate        Decimal         @db.Decimal(5, 2)
+  vatAmount      Decimal         @db.Decimal(18, 4)
+  totalAmount    Decimal         @db.Decimal(18, 4)
+
+  status         StatementStatus @default(DRAFT)
+  notes          String?
+
+  // Workflow
+  createdById    String
+  createdBy      User            @relation("StatementCreator", fields: [createdById], references: [id])
+  approvedById   String?
+  approvedBy     User?           @relation("StatementApprover", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  sites          StatementSite[]
+  lines          StatementLine[]
+  invoices       Invoice[]
+
+  @@unique([organizationId, referenceNo])
+  @@map("statements")
+}
+
+model StatementSite {
+  id          String    @id @default(cuid())
+  statementId String
+  statement   Statement @relation(fields: [statementId], references: [id])
+  siteId      String
+  site        Site      @relation(fields: [siteId], references: [id])
+
+  @@unique([statementId, siteId])
+  @@map("statement_sites")
+}
+
+model StatementLine {
+  id             String    @id @default(cuid())
+  statementId    String
+  statement      Statement @relation(fields: [statementId], references: [id])
+  workEntryId    String
+  workEntry      WorkEntry @relation(fields: [workEntryId], references: [id])
+
+  // Snapshot data (frozen)
+  itemNameAr     String
+  itemNameEn     String?
+  unit           String
+  unitEn         String?
+
+  // Quantities (can be partial of workEntry.quantity)
+  approvedQuantity Decimal @db.Decimal(18, 4)
+  unitPrice        Decimal @db.Decimal(18, 4)
+  lineTotal        Decimal @db.Decimal(18, 4)
+
+  sortOrder      Int       @default(0)
+
+  @@map("statement_lines")
+}
+
+// =============================================================
+// INVOICES (الفواتير)
+// =============================================================
+
+model Invoice {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  clientId       String
+  client         Client        @relation(fields: [clientId], references: [id])
+  statementId    String?       // null = direct invoice
+  statement      Statement?    @relation(fields: [statementId], references: [id])
+
+  referenceNo    String
+  invoiceType    InvoiceType   @default(TAX_INVOICE)
+  issueDate      DateTime      @db.Date
+  dueDate        DateTime?     @db.Date
+  supplyDate     DateTime?     @db.Date  // تاريخ التوريد
+
+  // Org & Client snapshot (frozen at issue time)
+  orgSnapshot    Json
+  clientSnapshot Json
+
+  // Financials
+  subtotal       Decimal       @db.Decimal(18, 4)
+  discountAmount Decimal       @default(0) @db.Decimal(18, 4)
+  taxableAmount  Decimal       @db.Decimal(18, 4)
+  vatRate        Decimal       @db.Decimal(5, 2)
+  vatAmount      Decimal       @db.Decimal(18, 4)
+  totalAmount    Decimal       @db.Decimal(18, 4)
+  paidAmount     Decimal       @default(0) @db.Decimal(18, 4)
+  remainingAmount Decimal      @db.Decimal(18, 4)
+
+  // Status
+  status         InvoiceStatus @default(DRAFT)
+  paymentStatus  PaymentStatus @default(UNPAID)
+  notes          String?
+
+  // ZATCA
+  zatcaStatus    ZatcaStatus   @default(NOT_SUBMITTED)
+  zatcaUuid      String?       @unique
+  zatcaQrCode    String?
+  zatcaXml       String?
+  zatcaResponse  Json?
+  zatcaSubmittedAt DateTime?
+
+  // Workflow
+  createdById    String
+  createdBy      User          @relation("InvoiceCreator", fields: [createdById], references: [id])
+
+  // Cancellation / Credit Note link
+  cancelledById  String?       // references another invoice (credit note)
+  cancellationReason String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  lines          InvoiceLine[]
+  payments       Payment[]
+
+  @@unique([organizationId, referenceNo])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id             String   @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id])
+  workEntryId    String?
+  workEntry      WorkEntry? @relation(fields: [workEntryId], references: [id])
+
+  // Snapshot data (frozen)
+  itemNameAr     String
+  itemNameEn     String?
+  itemDescAr     String?
+  unit           String
+  unitEn         String?
+
+  quantity       Decimal  @db.Decimal(18, 4)
+  unitPrice      Decimal  @db.Decimal(18, 4)
+  discountPct    Decimal  @default(0) @db.Decimal(5, 2)
+  discountAmount Decimal  @default(0) @db.Decimal(18, 4)
+  lineSubtotal   Decimal  @db.Decimal(18, 4)
+  vatRate        Decimal  @db.Decimal(5, 2)
+  vatAmount      Decimal  @db.Decimal(18, 4)
+  lineTotal      Decimal  @db.Decimal(18, 4)
+
+  sortOrder      Int      @default(0)
+
+  @@map("invoice_lines")
+}
+
+// =============================================================
+// PAYMENTS
+// =============================================================
+
+model Payment {
+  id             String        @id @default(cuid())
+  organizationId String
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  invoiceId      String
+  invoice        Invoice       @relation(fields: [invoiceId], references: [id])
+  clientId       String
+  client         Client        @relation(fields: [clientId], references: [id])
+
+  paymentDate    DateTime      @db.Date
+  amount         Decimal       @db.Decimal(18, 4)
+  method         PaymentMethod @default(BANK_TRANSFER)
+  referenceNo    String?       // Transaction / transfer / cheque ref
+
+  // Receiving company bank account (optional for non-bank-transfer or legacy)
+  bankAccountId  String?
+  bankAccount    OrgBankAccount? @relation(fields: [bankAccountId], references: [id])
+
+  // Method-specific transaction fields
+  senderBankName String?       // Customer sending bank or Drawee bank
+  transferDate   DateTime?     @db.Date // Actual transfer date if distinct from recording date
+  chequeNumber   String?       // Cheque number
+  chequeDate     DateTime?     @db.Date // Cheque issue or due date
+  cardProvider   String?       // Mada / Visa / Mastercard
+  terminalId     String?       // POS Terminal ID / auth reference
+  receiptNumber  String?       // Cash receipt / voucher number
+  description    String?       // Method description when method is OTHER
+
+  notes          String?
+
+  // Idempotency key to prevent duplicate payments
+  idempotencyKey String        @unique
+
+  recordedById   String
+  recordedBy     User          @relation(fields: [recordedById], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("payments")
+}
+
+// =============================================================
+// AUDIT LOG
+// =============================================================
+
+model AuditLog {
+  id             String      @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  userId         String?
+  user           User?       @relation(fields: [userId], references: [id])
+
+  action         AuditAction
+  entityType     String      // 'WorkEntry' | 'Invoice' | 'Statement' | etc.
+  entityId       String
+  description    String?
+  metadata       Json?       // Additional context (old/new values, etc.)
+  ipAddress      String?
+
+  createdAt   DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, action])
+  @@index([organizationId, entityType])
+  @@index([organizationId, userId])
+  @@map("audit_logs")
+}

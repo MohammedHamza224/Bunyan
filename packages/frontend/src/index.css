@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --direction: rtl;
+    /* Construction Industry Design Tokens */
+    --color-primary: #18324B;
+    --color-primary-dark: #102437;
+    --color-primary-light: #EAF0F5;
+    --color-secondary: #E6A23C;
+    --color-secondary-dark: #B97816;
+    --color-secondary-light: #FFF4DF;
+    --color-bg-main: #F5F7FA;
+    --color-bg-card: #FFFFFF;
+    --color-text-primary: #1F2937;
+    --color-text-secondary: #667085;
+    --color-border: #E4E7EC;
+  }
+
+  html[dir="ltr"] {
+    --direction: ltr;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: var(--color-bg-main);
+    color: var(--color-text-primary);
+    @apply antialiased;
+    font-family: 'IBM Plex Sans Arabic', 'Inter', system-ui, sans-serif;
+  }
+
+  /* Refined table & card borders using design system token */
+  table thead {
+    background-color: #F8FAFC;
+  }
+
+  /* Accessible focus ring for keyboard navigation */
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(24, 50, 75, 0.14);
+  }
+
+  /* RTL-aware scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background-color: #EAF0F5;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: #94A3B8;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #64748B;
+  }
+
+  /* Subtle dark-navy scrollbar for the navigation sidebar */
+  .sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.18);
+    border-radius: 9999px;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(230, 162, 60, 0.55);
+  }
+}
+
+@layer components {
+  .cf-card {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    @apply rounded-xl shadow-card;
+  }
+
+  .cf-btn-primary {
+    background-color: var(--color-primary);
+    @apply text-white font-semibold rounded-lg px-4 py-2.5 text-sm shadow-sm transition-colors hover:bg-[#102437] disabled:opacity-50;
+  }
+
+  .cf-btn-amber {
+    background-color: var(--color-secondary);
+    @apply text-[#102437] font-semibold rounded-lg px-4 py-2.5 text-sm shadow-sm transition-colors hover:bg-[#B97816] hover:text-white disabled:opacity-50;
+  }
+
+  .cf-badge-amber {
+    background-color: var(--color-secondary-light);
+    color: var(--color-secondary-dark);
+    border: 1px solid rgba(230, 162, 60, 0.35);
+    @apply px-2.5 py-0.5 rounded-full text-xs font-semibold;
+  }
+}
+
+@layer utilities {
+  .rtl-flip {
+    transform: scaleX(var(--rtl-flip, 1));
+  }
+
+  html[dir="rtl"] .rtl-flip {
+    --rtl-flip: -1;
+  }
+}
+
+/* =============================================================
+   Professional A4 Print Styles (Statements & Tax Invoices)
+   Supports both Arabic (RTL) and English (LTR)
+   ============================================================= */
+@page {
+  size: A4 portrait;
+  margin: 10mm 10mm 10mm 10mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .a4-print-sheet {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+  }
+
+  table {
+    page-break-inside: auto;
+    border-collapse: collapse !important;
+    width: 100% !important;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
+  }
+
+  .print-avoid-break {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

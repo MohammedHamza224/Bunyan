@@ -1,0 +1,72 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['IBM Plex Sans Arabic', 'Inter', 'system-ui', 'sans-serif'],
+      },
+      colors: {
+        navy: {
+          50: '#EAF0F5',
+          100: '#D5E1EC',
+          200: '#B0C6DA',
+          300: '#82A4C3',
+          400: '#4F7CA4',
+          500: '#274E72',
+          600: '#18324B',
+          700: '#102437',
+          800: '#0D1D2C',
+          900: '#09141F',
+          DEFAULT: '#18324B',
+          dark: '#102437',
+          light: '#EAF0F5',
+        },
+        construction: {
+          50: '#FFF4DF',
+          100: '#FDE6BD',
+          200: '#FBD28A',
+          400: '#EDA944',
+          500: '#E6A23C',
+          600: '#B97816',
+          700: '#965F0E',
+          DEFAULT: '#E6A23C',
+          dark: '#B97816',
+          light: '#FFF4DF',
+        },
+        brand: {
+          50: '#EAF0F5',
+          100: '#D5E1EC',
+          500: '#274E72',
+          600: '#18324B',
+          700: '#102437',
+          900: '#09141F',
+        },
+        blue: {
+          50: '#EAF0F5',
+          100: '#D5E1EC',
+          200: '#B0C6DA',
+          300: '#82A4C3',
+          400: '#4F7CA4',
+          500: '#274E72',
+          600: '#18324B',
+          700: '#102437',
+          800: '#0D1D2C',
+          900: '#09141F',
+        },
+        neutral: {
+          bg: '#F5F7FA',
+          card: '#FFFFFF',
+          text: '#1F2937',
+          muted: '#667085',
+          border: '#E4E7EC',
+        },
+      },
+      boxShadow: {
+        card: '0 1px 3px 0 rgba(16, 36, 55, 0.06), 0 1px 2px -1px rgba(16, 36, 55, 0.04)',
+        'card-hover': '0 4px 12px -2px rgba(16, 36, 55, 0.10), 0 2px 4px -2px rgba(16, 36, 55, 0.06)',
+      },
+    },
+  },
+  plugins: [],
+}
