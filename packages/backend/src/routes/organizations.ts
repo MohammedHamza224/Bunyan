@@ -1,5 +1,9 @@
 import { Router, Response } from 'express';
+import path from 'path';
+import fs from 'fs';
+import multer from 'multer';
 import { prisma } from '../lib/prisma';
+import { config } from '../config';
 import {
   authenticate,
   requirePermission,
@@ -13,6 +17,7 @@ import {
 import { NotFoundError, ValidationError, AuthorizationError, BusinessRuleError, ConflictError } from '../middleware/errorHandler';
 import { Prisma, UserRole } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { zatcaService } from '../services/zatcaService';
 
 const router = Router();
 
@@ -80,6 +85,26 @@ router.put(
       }
     }
 
+    // Validate website if provided
+    if (updateData.website !== undefined && updateData.website !== null) {
+      const trimmedWebsite = String(updateData.website).trim();
+      if (trimmedWebsite === '') {
+        updateData.website = null;
+      } else {
+        try {
+          const parsedUrl = new URL(trimmedWebsite);
+          if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+            throw new Error();
+          }
+          updateData.website = trimmedWebsite;
+        } catch {
+          throw new ValidationError(
+            'الرجاء إدخال رابط موقع إلكتروني صالح يبدأ بـ http:// أو https:// (Please enter a valid website URL starting with http:// or https://)'
+          );
+        }
+      }
+    }
+
     const settings = await prisma.$transaction(async (tx) => {
       const updated = await tx.orgSettings.upsert({
         where: { organizationId },
@@ -104,6 +129,197 @@ router.put(
     });
 
     res.json({ success: true, data: settings });
+  }
+);
+
+// ─── Company Logo Upload & Removal ─────────────────────────────
+
+const logoUploadDir = path.resolve(config.uploadDir);
+if (!fs.existsSync(logoUploadDir)) {
+  fs.mkdirSync(logoUploadDir, { recursive: true });
+}
+
+const logoStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, logoUploadDir);
+  },
+  filename: (req, file, cb) => {
+    const authReq = req as unknown as AuthenticatedRequest;
+    const orgId = authReq.user?.organizationId || 'org';
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeExt = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext) ? ext : '.png';
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    cb(null, `logo-${orgId}-${uniqueSuffix}${safeExt}`);
+  },
+});
+
+const logoUpload = multer({
+  storage: logoStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new ValidationError('Invalid file type. Only PNG, JPG/JPEG, and WebP images are allowed.'));
+    }
+  },
+});
+
+/**
+ * POST /api/organizations/logo
+ * Upload and persist company logo.
+ */
+router.post(
+  '/logo',
+  requirePermission(PERMISSIONS.MANAGE_SETTINGS),
+  (req, res, next) => {
+    (logoUpload.single('logo') as any)(req, res, (err: any) => {
+      if (err) {
+        if (err.name === 'MulterError' && (err as any).code === 'LIMIT_FILE_SIZE') {
+          return next(new ValidationError('File size exceeds the 5MB limit. Please choose an image smaller than 5MB.'));
+        }
+        return next(err);
+      }
+      next();
+    });
+  },
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: userId } = authReq.user;
+
+    if (!req.file) {
+      throw new ValidationError('No image file provided.');
+    }
+
+    const logoUrl = `/uploads/${req.file.filename}`;
+
+    const settings = await prisma.$transaction(async (tx) => {
+      const existing = await tx.orgSettings.findUnique({
+        where: { organizationId },
+      });
+
+      // Safely delete previous local logo file if exists
+      if (existing?.logoUrl && existing.logoUrl.startsWith('/uploads/logo-')) {
+        const oldFile = path.basename(existing.logoUrl);
+        const oldPath = path.join(logoUploadDir, oldFile);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch {
+            // Ignore unlink errors
+          }
+        }
+      }
+
+      const updated = await tx.orgSettings.upsert({
+        where: { organizationId },
+        update: { logoUrl },
+        create: {
+          organizationId,
+          logoUrl,
+          defaultCurrency: 'SAR',
+          defaultLanguage: 'ar',
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: 'SETTINGS_UPDATE',
+          entityType: 'OrgSettings',
+          entityId: updated.id,
+          description: 'Company logo uploaded and updated',
+          metadata: {
+            logoUrl,
+            originalName: req.file?.originalname,
+            size: req.file?.size,
+            mimeType: req.file?.mimetype,
+          },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+
+      return updated;
+    });
+
+    res.json({
+      success: true,
+      data: {
+        logoUrl,
+        settings,
+      },
+    });
+  }
+);
+
+/**
+ * DELETE /api/organizations/logo
+ * Remove company logo.
+ */
+router.delete(
+  '/logo',
+  requirePermission(PERMISSIONS.MANAGE_SETTINGS),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: userId } = authReq.user;
+
+    const settings = await prisma.$transaction(async (tx) => {
+      const existing = await tx.orgSettings.findUnique({
+        where: { organizationId },
+      });
+
+      if (existing?.logoUrl && existing.logoUrl.startsWith('/uploads/logo-')) {
+        const oldFile = path.basename(existing.logoUrl);
+        const oldPath = path.join(logoUploadDir, oldFile);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch {
+            // Ignore unlink errors
+          }
+        }
+      }
+
+      const updated = await tx.orgSettings.upsert({
+        where: { organizationId },
+        update: { logoUrl: null },
+        create: {
+          organizationId,
+          logoUrl: null,
+          defaultCurrency: 'SAR',
+          defaultLanguage: 'ar',
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: 'SETTINGS_UPDATE',
+          entityType: 'OrgSettings',
+          entityId: updated.id,
+          description: 'Company logo removed',
+          metadata: {
+            previousLogoUrl: existing?.logoUrl,
+          },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+
+      return updated;
+    });
+
+    res.json({
+      success: true,
+      data: {
+        logoUrl: null,
+        settings,
+      },
+    });
   }
 );
 
@@ -891,6 +1107,60 @@ router.get('/users', requirePermission(PERMISSIONS.VIEW_DATA), async (req, res: 
 });
 
 /**
+ * GET /api/organizations/users/:id
+ * Retrieve details for a specific user in the organization.
+ */
+router.get('/users/:id', requirePermission(PERMISSIONS.VIEW_DATA), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId, id: requesterId, permissions } = authReq.user;
+  const { id } = req.params;
+
+  const canManageSettings = permissions.includes(PERMISSIONS.MANAGE_SETTINGS);
+  if (!canManageSettings && id !== requesterId) {
+    throw new AuthorizationError('You do not have permission to view other users');
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      organizationId: true,
+      email: true,
+      nameAr: true,
+      nameEn: true,
+      role: true,
+      permissions: true,
+      isActive: true,
+      lastLoginAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  if (!user) {
+    throw new NotFoundError('User');
+  }
+  assertSameOrg(organizationId, user.organizationId, 'User');
+
+  res.json({
+    success: true,
+    data: {
+      id: user.id,
+      email: user.email,
+      nameAr: user.nameAr,
+      nameEn: user.nameEn,
+      role: user.role,
+      permissions: user.permissions,
+      isActive: user.isActive,
+      lastLoginAt: user.lastLoginAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      effectivePermissions: resolveUserPermissions(user.role, user.permissions),
+    },
+  });
+});
+
+/**
  * POST /api/organizations/users
  * Create a new user in the organization. Requires MANAGE_SETTINGS permission.
  */
@@ -1004,6 +1274,11 @@ router.put('/users/:id', async (req, res: Response) => {
   const {
     password,
     email,
+    nameAr,
+    nameEn,
+    role,
+    permissions,
+    isActive,
     passwordHash: _ph,
     organizationId: _oid,
     id: _id,
@@ -1014,6 +1289,21 @@ router.put('/users/:id', async (req, res: Response) => {
 
   const data: Record<string, unknown> = { ...updateData };
 
+  // Validate and handle nameAr
+  if (nameAr !== undefined) {
+    const trimmedAr = String(nameAr).trim();
+    if (!trimmedAr) {
+      throw new ValidationError('Arabic name (nameAr) is required / الاسم الكامل بالعربية مطلوب');
+    }
+    data.nameAr = trimmedAr;
+  }
+
+  // Handle nameEn
+  if (nameEn !== undefined) {
+    data.nameEn = nameEn ? String(nameEn).trim() : null;
+  }
+
+  // Handle password update if provided
   if (password) {
     if (String(password).length < 8) {
       throw new ValidationError('Password must be at least 8 characters');
@@ -1021,8 +1311,27 @@ router.put('/users/:id', async (req, res: Response) => {
     data.passwordHash = await bcrypt.hash(password, 12);
   }
 
-  if (email) {
-    data.email = String(email).toLowerCase().trim();
+  // Handle email update and validate uniqueness
+  if (email !== undefined) {
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      throw new ValidationError('Invalid email format / صيغة البريد الإلكتروني غير صحيحة');
+    }
+
+    if (normalizedEmail !== existing.email) {
+      const duplicate = await prisma.user.findFirst({
+        where: {
+          organizationId,
+          email: normalizedEmail,
+          id: { not: id },
+        },
+      });
+      if (duplicate) {
+        throw new ValidationError('A user with this email already exists in your organization / يوجد مستخدم آخر بهذا البريد الإلكتروني في المؤسسة');
+      }
+      data.email = normalizedEmail;
+    }
   }
 
   // Only users with MANAGE_SETTINGS can change roles, permissions, or active status
@@ -1030,10 +1339,36 @@ router.put('/users/:id', async (req, res: Response) => {
     delete data.role;
     delete data.permissions;
     delete data.isActive;
-  } else if (Array.isArray(data.permissions)) {
-    data.permissions = (data.permissions as string[]).filter((p) =>
-      ALL_PERMISSIONS.includes(p as any)
-    );
+  } else {
+    // Validate role if specified
+    if (role !== undefined) {
+      if (Object.values(UserRole).includes(role)) {
+        // Self-protection: Administrator cannot remove their own admin role
+        if (id === requesterId && existing.role === UserRole.ORG_ADMIN && role !== UserRole.ORG_ADMIN) {
+          throw new ValidationError('You cannot remove your own administrative role / لا يمكنك إلغاء دورك الإداري بنفسك');
+        }
+        data.role = role;
+      } else {
+        throw new ValidationError('Invalid user role');
+      }
+    }
+
+    // Filter permissions to valid set
+    if (Array.isArray(permissions)) {
+      data.permissions = (permissions as string[]).filter((p) =>
+        ALL_PERMISSIONS.includes(p as any)
+      );
+    }
+
+    // Handle isActive toggle
+    if (isActive !== undefined) {
+      const activeBool = Boolean(isActive);
+      // Self-protection: Administrator cannot deactivate their own account
+      if (id === requesterId && !activeBool) {
+        throw new ValidationError('You cannot deactivate your own account / لا يمكنك تعطيل حسابك بنفسك');
+      }
+      data.isActive = activeBool;
+    }
   }
 
   const updated = await prisma.$transaction(async (tx) => {
@@ -1051,6 +1386,14 @@ router.put('/users/:id', async (req, res: Response) => {
         updatedAt: true,
       },
     });
+
+    // If account was deactivated, revoke all active refresh tokens immediately
+    if (data.isActive === false) {
+      await tx.refreshToken.updateMany({
+        where: { userId: id },
+        data: { revokedAt: new Date() },
+      });
+    }
 
     await tx.auditLog.create({
       data: {
@@ -1076,6 +1419,220 @@ router.put('/users/:id', async (req, res: Response) => {
     },
   });
 });
+
+/**
+ * POST /api/organizations/users/:id/reset-password
+ * Dedicated administrative password reset for a user in the organization.
+ * Requires MANAGE_SETTINGS permission.
+ */
+router.post(
+  '/users/:id/reset-password',
+  requirePermission(PERMISSIONS.MANAGE_SETTINGS),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: requesterId } = authReq.user;
+    const { id } = req.params;
+    const { newPassword, password, confirmPassword } = req.body;
+
+    const pwdToSet = newPassword || password;
+    if (!pwdToSet) {
+      throw new ValidationError('New password is required / كلمة المرور الجديدة مطلوبة');
+    }
+
+    if (String(pwdToSet).length < 8) {
+      throw new ValidationError('Password must be at least 8 characters / يجب أن تتكون كلمة المرور من 8 أحرف على الأقل');
+    }
+
+    if (confirmPassword && confirmPassword !== pwdToSet) {
+      throw new ValidationError('Passwords do not match / كلمتا المرور غير متطابقتين');
+    }
+
+    const existing = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundError('User');
+    }
+    assertSameOrg(organizationId, existing.organizationId, 'User');
+
+    const passwordHash = await bcrypt.hash(String(pwdToSet), 12);
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Update passwordHash only - strictly preserving profile, role, permissions, and isActive status
+      await tx.user.update({
+        where: { id },
+        data: { passwordHash },
+      });
+
+      // 2. Invalidate all active sessions/refresh tokens for the user
+      await tx.refreshToken.updateMany({
+        where: { userId: id },
+        data: { revokedAt: new Date() },
+      });
+
+      // 3. Record administrative reset event in audit log without logging the password or its hash
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId: requesterId,
+          action: 'USER_MANAGE',
+          entityType: 'User',
+          entityId: id,
+          description: `Administratively reset password for user ${existing.email}`,
+          metadata: {
+            operation: 'RESET_PASSWORD',
+            targetUserId: id,
+            targetEmail: existing.email,
+          },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+    });
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully / تم إعادة تعيين كلمة المرور بنجاح',
+    });
+  }
+);
+
+/**
+ * POST /api/organizations/users/:id/activate
+ * Re-activate a deactivated user account. Requires MANAGE_SETTINGS.
+ */
+router.post(
+  '/users/:id/activate',
+  requirePermission(PERMISSIONS.MANAGE_SETTINGS),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: requesterId } = authReq.user;
+    const { id } = req.params;
+
+    const existing = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundError('User');
+    }
+    assertSameOrg(organizationId, existing.organizationId, 'User');
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.user.update({
+        where: { id },
+        data: { isActive: true },
+        select: {
+          id: true,
+          email: true,
+          nameAr: true,
+          nameEn: true,
+          role: true,
+          permissions: true,
+          isActive: true,
+          updatedAt: true,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId: requesterId,
+          action: 'USER_MANAGE',
+          entityType: 'User',
+          entityId: id,
+          description: `Activated user account ${existing.email}`,
+          metadata: { operation: 'ACTIVATE_USER', targetUserId: id },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+
+      return u;
+    });
+
+    res.json({
+      success: true,
+      message: 'User activated successfully / تم تفعيل المستخدم بنجاح',
+      data: {
+        ...updated,
+        effectivePermissions: resolveUserPermissions(updated.role, updated.permissions),
+      },
+    });
+  }
+);
+
+/**
+ * POST /api/organizations/users/:id/deactivate
+ * Deactivate a user account. Requires MANAGE_SETTINGS.
+ */
+router.post(
+  '/users/:id/deactivate',
+  requirePermission(PERMISSIONS.MANAGE_SETTINGS),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: requesterId } = authReq.user;
+    const { id } = req.params;
+
+    if (id === requesterId) {
+      throw new ValidationError('You cannot deactivate your own account / لا يمكنك تعطيل حسابك بنفسك');
+    }
+
+    const existing = await prisma.user.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundError('User');
+    }
+    assertSameOrg(organizationId, existing.organizationId, 'User');
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.user.update({
+        where: { id },
+        data: { isActive: false },
+        select: {
+          id: true,
+          email: true,
+          nameAr: true,
+          nameEn: true,
+          role: true,
+          permissions: true,
+          isActive: true,
+          updatedAt: true,
+        },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: { userId: id },
+        data: { revokedAt: new Date() },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId: requesterId,
+          action: 'USER_MANAGE',
+          entityType: 'User',
+          entityId: id,
+          description: `Deactivated user ${existing.email}`,
+          metadata: { operation: 'DEACTIVATE_USER', targetUserId: id },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+
+      return u;
+    });
+
+    res.json({
+      success: true,
+      message: 'User deactivated successfully / تم تعطيل المستخدم بنجاح',
+      data: {
+        ...updated,
+        effectivePermissions: resolveUserPermissions(updated.role, updated.permissions),
+      },
+    });
+  }
+);
 
 /**
  * DELETE /api/organizations/users/:id
@@ -1162,5 +1719,235 @@ router.delete(
     res.json({ success: true, message: 'User deactivated successfully' });
   }
 );
+
+// ─── ZATCA Phase 2 E-Invoicing Management & Onboarding ───────────
+
+/**
+ * GET /api/organizations/zatca/status
+ * Returns current ZATCA onboarding status, environment, and readiness checklist.
+ */
+router.get('/zatca/status', requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId } = authReq.user;
+
+  const settings = await prisma.orgSettings.findUnique({
+    where: { organizationId },
+  });
+
+  const hasBusinessName = Boolean(settings?.businessName?.trim());
+  const hasVatNumber = Boolean(settings?.vatNumber && /^3\d{13}3$/.test(settings.vatNumber.trim()));
+  const hasAddress = Boolean(settings?.address?.trim());
+  const hasComplianceCsid = Boolean(settings?.zatcaComplianceCsid);
+  const hasProductionCsid = Boolean(settings?.zatcaCsid);
+  const isEnabled = settings?.zatcaEnabled === true;
+
+  const checklist = [
+    { key: 'BUSINESS_NAME', labelAr: 'اسم المنشأة بالعربية', labelEn: 'Arabic Business Name', passed: hasBusinessName },
+    { key: 'VAT_NUMBER', labelAr: 'الرقم الضريبي (15 رقماً يبدأ وينتهي بـ 3)', labelEn: '15-digit VAT Number', passed: hasVatNumber },
+    { key: 'ADDRESS', labelAr: 'عنوان المنشأة الوطني', labelEn: 'National Address', passed: hasAddress },
+    { key: 'COMPLIANCE_CSID', labelAr: 'شهادة الامتثال الفني (Compliance CSID)', labelEn: 'Compliance CSID', passed: hasComplianceCsid },
+    { key: 'PRODUCTION_CSID', labelAr: 'شهادة الربط المباشر للإنتاج (Production CSID)', labelEn: 'Production CSID', passed: hasProductionCsid },
+    { key: 'ZATCA_ENABLED', labelAr: 'تفعيل الربط الإلكتروني المباشر', labelEn: 'ZATCA Integration Active', passed: isEnabled },
+  ];
+
+  res.json({
+    success: true,
+    data: {
+      zatcaEnabled: isEnabled,
+      zatcaEnvironment: settings?.zatcaEnvironment || 'sandbox',
+      zatcaOnboardingStatus: settings?.zatcaOnboardingStatus || 'NOT_ONBOARDED',
+      egsUuid: settings?.zatcaEgsUuid || null,
+      hasComplianceCsid,
+      hasProductionCsid,
+      certExpiry: settings?.zatcaCertExpiry || null,
+      lastSync: settings?.zatcaLastSync || null,
+      checklist,
+      isReadyForProduction: hasBusinessName && hasVatNumber && hasAddress && hasProductionCsid && isEnabled,
+    },
+  });
+});
+
+/**
+ * POST /api/organizations/zatca/csr
+ * Generates an ECDSA secp256k1 keypair and Certificate Signing Request (CSR) for ZATCA Fatoora Portal onboarding.
+ */
+router.post('/zatca/csr', requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId } = authReq.user;
+
+  const settings = await prisma.orgSettings.findUnique({
+    where: { organizationId },
+  });
+
+  if (!settings?.businessName?.trim()) {
+    throw new ValidationError('اسم المنشأة الرسمي مطلوب في الإعدادات لتوليد الشهادة');
+  }
+  if (!settings?.vatNumber || !/^3\d{13}3$/.test(settings.vatNumber.trim())) {
+    throw new ValidationError('الرقم الضريبي للمنشأة غير صالح (يجب أن يتكون من 15 رقماً ويبدأ وينتهي بـ 3)');
+  }
+
+  const { commonName, branchName } = req.body;
+  const cn = commonName?.trim() || `EGS-${settings.vatNumber.slice(-6)}-${Date.now().toString().slice(-4)}`;
+
+  const { csrBase64, egsUuid } = zatcaService.generateEgsCsr({
+    commonName: cn,
+    organizationName: settings.businessName,
+    vatNumber: settings.vatNumber,
+    branchName: branchName || 'Main',
+    city: settings.city || 'Riyadh',
+    solutionName: 'BUNYAN-Construction-ERP',
+  });
+
+  await prisma.orgSettings.update({
+    where: { organizationId },
+    data: {
+      zatcaEgsUuid: egsUuid,
+      zatcaOnboardingStatus: 'CSR_GENERATED',
+    },
+  });
+
+  res.json({
+    success: true,
+    data: {
+      egsUuid,
+      commonName: cn,
+      csrBase64,
+    },
+    message: 'تم توليد مفتاح التشفير وطلب الشهادة (CSR) بنجاح. يمكنك استخدامه مع رمز OTP على منصة فاتورة للحصول على شهادة الامتثال.',
+  });
+});
+
+/**
+ * POST /api/organizations/zatca/onboard
+ * Calls official ZATCA Compliance CSID API with OTP from Fatoora portal.
+ */
+router.post('/zatca/onboard', requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId, id: userId } = authReq.user;
+
+  const { otp, csrBase64, environment } = req.body;
+  if (!otp || typeof otp !== 'string' || !otp.trim()) {
+    throw new ValidationError('رمز التحقق (OTP) من منصة فاتورة مطلوب لإتمام الربط');
+  }
+  if (!csrBase64 || typeof csrBase64 !== 'string') {
+    throw new ValidationError('طلب الشهادة المشفر (CSR) مطلوب');
+  }
+
+  const targetEnv = environment || 'sandbox';
+
+  try {
+    const csidResult = await zatcaService.requestComplianceCsid({
+      otp: otp.trim(),
+      csrBase64: csrBase64.trim(),
+      environment: targetEnv,
+    });
+
+    await prisma.orgSettings.update({
+      where: { organizationId },
+      data: {
+        zatcaEnvironment: targetEnv,
+        zatcaComplianceReqId: csidResult.requestID,
+        zatcaComplianceCsid: csidResult.binarySecurityToken,
+        zatcaComplianceSecret: csidResult.secret,
+        zatcaOnboardingStatus: 'COMPLIANCE_PASSED',
+        zatcaLastSync: new Date(),
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        organizationId,
+        userId,
+        action: 'SETTINGS_UPDATE',
+        entityType: 'OrganizationSettings',
+        entityId: organizationId,
+        description: `Successfully onboarded ZATCA Compliance CSID (Request ID: ${csidResult.requestID}) in ${targetEnv} environment`,
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        requestID: csidResult.requestID,
+        environment: targetEnv,
+        status: 'COMPLIANCE_PASSED',
+      },
+      message: 'تم استلام شهادة الامتثال (Compliance CSID) بنجاح من منصة فاتورة.',
+    });
+  } catch (err: any) {
+    res.status(422).json({
+      success: false,
+      error: {
+        code: 'ZATCA_ONBOARDING_ERROR',
+        message: err.message,
+      },
+    });
+  }
+});
+
+/**
+ * PUT /api/organizations/zatca/settings
+ * Configures ZATCA environment, toggles enabled status, or saves existing CSID credentials manually.
+ */
+router.put('/zatca/settings', requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId, id: userId } = authReq.user;
+
+  const {
+    zatcaEnabled,
+    zatcaEnvironment,
+    zatcaCsid,
+    zatcaSecret,
+    zatcaComplianceCsid,
+    zatcaComplianceSecret,
+  } = req.body;
+
+  const updateData: Prisma.OrgSettingsUpdateInput = {};
+
+  if (zatcaEnabled !== undefined) updateData.zatcaEnabled = Boolean(zatcaEnabled);
+  if (zatcaEnvironment) {
+    const env = String(zatcaEnvironment).toLowerCase();
+    if (['sandbox', 'simulation', 'production'].includes(env)) {
+      updateData.zatcaEnvironment = env;
+    }
+  }
+  if (zatcaCsid !== undefined) updateData.zatcaCsid = zatcaCsid ? String(zatcaCsid).trim() : null;
+  if (zatcaSecret !== undefined) updateData.zatcaSecret = zatcaSecret ? String(zatcaSecret).trim() : null;
+  if (zatcaComplianceCsid !== undefined) {
+    updateData.zatcaComplianceCsid = zatcaComplianceCsid ? String(zatcaComplianceCsid).trim() : null;
+  }
+  if (zatcaComplianceSecret !== undefined) {
+    updateData.zatcaComplianceSecret = zatcaComplianceSecret ? String(zatcaComplianceSecret).trim() : null;
+  }
+
+  // Auto-update onboarding status if CSID is provided
+  if (zatcaCsid) {
+    updateData.zatcaOnboardingStatus = 'ACTIVE';
+  } else if (zatcaComplianceCsid) {
+    updateData.zatcaOnboardingStatus = 'COMPLIANCE_PASSED';
+  }
+
+  const updated = await prisma.orgSettings.update({
+    where: { organizationId },
+    data: updateData,
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      organizationId,
+      userId,
+      action: 'SETTINGS_UPDATE',
+      entityType: 'OrganizationSettings',
+      entityId: organizationId,
+      description: `Updated ZATCA settings: enabled=${updated.zatcaEnabled}, env=${updated.zatcaEnvironment}`,
+    },
+  });
+
+  res.json({
+    success: true,
+    data: updated,
+    message: 'تم حفظ إعدادات الربط مع هيئة الزكاة والضريبة والجمارك بنجاح.',
+  });
+});
 
 export default router;

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" rx="28" fill="#102437" />
+  <g transform="translate(16, 16) scale(3)">
+    <!-- Base datum line -->
+    <path d="M4 27H28" stroke="#E6A23C" stroke-width="2.5" stroke-linecap="round" />
+    <!-- Left structural tower -->
+    <path d="M7 27V12L14 8V27" stroke="#FFFFFF" stroke-width="2.2" stroke-linejoin="round" />
+    <!-- Right taller structural tower -->
+    <path d="M16 27V6L25 10.5V27" stroke="#E6A23C" stroke-width="2.2" stroke-linejoin="round" />
+    <!-- Engineering cross-bracing -->
+    <path d="M16 13H25M16 19H25M7 18H14" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round" stroke-opacity="0.85" />
+  </g>
+</svg>

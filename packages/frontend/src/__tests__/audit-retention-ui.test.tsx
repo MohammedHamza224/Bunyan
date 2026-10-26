@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
@@ -7,6 +7,21 @@ import i18n from '../i18n'
 import { AuthProvider } from '../store/authStore'
 import { AuditLogSettingsTab } from '../components/settings/AuditLogSettingsTab'
 import { AuditLogsPage } from '../pages/audit-logs/AuditLogsPage'
+
+vi.mock('../store/authStore', () => ({
+  useAuth: () => ({
+    user: {
+      id: 'admin-user-1',
+      email: 'admin@bunyan.sa',
+      role: 'ORG_ADMIN',
+      nameAr: 'مدير النظام',
+      nameEn: 'System Admin',
+    },
+    isAuthenticated: true,
+    isLoading: false,
+  }),
+  AuthProvider: ({ children }: any) => <>{children}</>,
+}))
 
 describe('BUNYAN Audit Log Retention & Zero-Deletion UI Safeguards', () => {
   beforeEach(() => {
@@ -90,7 +105,39 @@ describe('BUNYAN Audit Log Retention & Zero-Deletion UI Safeguards', () => {
       </QueryClientProvider>
     )
 
-    expect(html).toContain('سجل العمليات والتدقيق الأمني')
-    expect(html).toContain('غير قابل للتعديل')
+    expect(html).toContain('سجل التدقيق')
+    expect(html).toContain('تصدير السجل')
+  })
+
+  it('renders AuditLogsPage with clear separation of Retention Cleanup and Clear Dev/Test Logs', async () => {
+    await i18n.changeLanguage('ar')
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    // Mock stats data with 74 total, 65 test, 9 financial, in development mode
+    queryClient.setQueryData(['auditLogsStats'], {
+      totalRecords: 74,
+      todayRecords: 5,
+      protectedCount: 74,
+      eligibleRetentionCount: 0,
+      eligibleDevTestCount: 65,
+      eligibleTestDebugCount: 65,
+      financialRecords: 9,
+      isDevelopment: true,
+    })
+
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <AuthProvider>
+            <AuditLogsPage />
+          </AuthProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    // Button to open cleanup modal
+    expect(html).toContain('إدارة الاحتفاظ بالسجلات')
   })
 })

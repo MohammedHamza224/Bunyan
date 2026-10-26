@@ -14,7 +14,15 @@ import {
   BusinessRuleError,
   AuthorizationError,
 } from '../middleware/errorHandler';
-import { WorkEntryStatus, ClientStatus, SiteStatus, Prisma } from '@prisma/client';
+import {
+  WorkEntryStatus,
+  ClientStatus,
+  SiteStatus,
+  StatementStatus,
+  InvoiceStatus,
+  UserRole,
+  Prisma,
+} from '@prisma/client';
 import { getNextSequenceNumber } from '../utils/sequences';
 
 const router = Router();
@@ -30,10 +38,11 @@ function computeTotal(quantity: Decimal | number | string, unitPrice: Decimal | 
   return q.mul(p).toDecimalPlaces(4);
 }
 
-// Editable statuses: DRAFT and REJECTED (rejected entries can be corrected and resubmitted)
+// Editable statuses: DRAFT, REJECTED, and PENDING_APPROVAL
 const EDITABLE_STATUSES: WorkEntryStatus[] = [
   WorkEntryStatus.DRAFT,
   WorkEntryStatus.REJECTED,
+  WorkEntryStatus.PENDING_APPROVAL,
 ];
 
 // ─── List Work Entries ──────────────────────────────────────────
@@ -403,6 +412,32 @@ router.put('/:id', requirePermission(PERMISSIONS.CREATE_WORK), async (req, res: 
     ...updateData
   } = req.body;
 
+  // Normalize field aliases
+  if (updateData.descriptionAr !== undefined) {
+    updateData.itemDescAr = updateData.descriptionAr ? String(updateData.descriptionAr).trim() : null;
+    delete updateData.descriptionAr;
+  }
+  if (updateData.descriptionEn !== undefined) {
+    updateData.itemDescEn = updateData.descriptionEn ? String(updateData.descriptionEn).trim() : null;
+    delete updateData.descriptionEn;
+  }
+  if (updateData.internalNotes !== undefined) {
+    updateData.notes = updateData.internalNotes ? String(updateData.internalNotes).trim() : null;
+    delete updateData.internalNotes;
+  }
+
+  if (updateData.itemNameAr !== undefined) {
+    const name = String(updateData.itemNameAr).trim();
+    if (!name) throw new ValidationError('Item name in Arabic is required');
+    updateData.itemNameAr = name;
+  }
+
+  if (updateData.unit !== undefined) {
+    const u = String(updateData.unit).trim();
+    if (!u) throw new ValidationError('Unit is required');
+    updateData.unit = u;
+  }
+
   if (updateData.quantity !== undefined) {
     const q = Number(updateData.quantity);
     if (isNaN(q) || q <= 0) {
@@ -420,7 +455,11 @@ router.put('/:id', requirePermission(PERMISSIONS.CREATE_WORK), async (req, res: 
   }
 
   if (updateData.workDate) {
-    updateData.workDate = new Date(updateData.workDate);
+    const d = new Date(updateData.workDate);
+    if (isNaN(d.getTime())) {
+      throw new ValidationError('Invalid workDate format');
+    }
+    updateData.workDate = d;
   }
 
   const newQuantity = updateData.quantity ?? existing.quantity;
@@ -441,7 +480,14 @@ router.put('/:id', requirePermission(PERMISSIONS.CREATE_WORK), async (req, res: 
         entityType: 'WorkEntry',
         entityId: entry.id,
         description: `Updated work entry ${entry.referenceNo}`,
-        metadata: { updatedFields: Object.keys(updateData) },
+        metadata: {
+          referenceNo: entry.referenceNo,
+          updatedFields: Object.keys(updateData),
+          previousTotalAmount: existing.totalAmount.toString(),
+          newTotalAmount: entry.totalAmount.toString(),
+          previousQuantity: existing.quantity.toString(),
+          newQuantity: entry.quantity.toString(),
+        },
         ipAddress: req.ip || req.socket.remoteAddress,
       },
     });
@@ -638,41 +684,128 @@ router.post(
 
 /**
  * DELETE /api/work-entries/:id
- * Only DRAFT entries.
+ * Safe deletion of eligible work entries (DRAFT, REJECTED, PENDING_APPROVAL, or APPROVED with 0 billing dependencies).
+ * Enforces strict checks against active statements, invoices, and billed quantities,
+ * reporting the exact blocking document reference if deletion is blocked.
  */
 router.delete(
   '/:id',
   requirePermission(PERMISSIONS.CREATE_WORK),
   async (req, res: Response) => {
     const authReq = req as AuthenticatedRequest;
-    const { organizationId, id: userId } = authReq.user;
+    const { organizationId, id: userId, role, permissions } = authReq.user;
 
     const entry = await prisma.workEntry.findUnique({ where: { id: req.params.id } });
     if (!entry) throw new NotFoundError('WorkEntry');
     assertSameOrg(organizationId, entry.organizationId, 'WorkEntry');
 
-    if (entry.status !== WorkEntryStatus.DRAFT) {
+    // Rule 1: Billed quantity check
+    if (
+      entry.status === WorkEntryStatus.FULLY_BILLED ||
+      entry.status === WorkEntryStatus.PARTIALLY_BILLED ||
+      entry.billedQuantity.gt(0)
+    ) {
       throw new BusinessRuleError(
-        `Only DRAFT entries can be deleted, current status: ${entry.status}`
+        `Cannot delete work entry ${entry.referenceNo} because it has recorded billed quantities (${entry.billedQuantity.toString()} ${entry.unit}). Reverse or cancel the associated billing documents first.`
       );
     }
 
-    await prisma.$transaction([
-      prisma.workEntry.delete({ where: { id: req.params.id } }),
-      prisma.auditLog.create({
+    // Rule 2: Active or issued Statement dependencies
+    const statementLines = await prisma.statementLine.findMany({
+      where: { workEntryId: req.params.id },
+      include: {
+        statement: {
+          select: { id: true, referenceNo: true, status: true },
+        },
+      },
+    });
+
+    const activeStatement = statementLines.find(
+      (sl) => sl.statement && sl.statement.status !== StatementStatus.CANCELLED
+    );
+    if (activeStatement) {
+      const stmt = activeStatement.statement;
+      throw new BusinessRuleError(
+        `Cannot delete work entry ${entry.referenceNo} because it is included in statement ${stmt.referenceNo} (${stmt.status}). Remove it from or cancel the statement first.`
+      );
+    }
+
+    // Rule 3: Active or issued Invoice dependencies
+    const invoiceLines = await prisma.invoiceLine.findMany({
+      where: { workEntryId: req.params.id },
+      include: {
+        invoice: {
+          select: { id: true, referenceNo: true, status: true },
+        },
+      },
+    });
+
+    const activeInvoice = invoiceLines.find(
+      (il) => il.invoice && il.invoice.status !== InvoiceStatus.CANCELLED
+    );
+    if (activeInvoice) {
+      const inv = activeInvoice.invoice;
+      throw new BusinessRuleError(
+        `Cannot delete work entry ${entry.referenceNo} because it is billed on invoice ${inv.referenceNo} (${inv.status}). Cancel or delete the invoice first.`
+      );
+    }
+
+    // Rule 4: Permission validation for APPROVED entries
+    if (entry.status === WorkEntryStatus.APPROVED) {
+      const isApproverOrAdmin =
+        role === UserRole.SUPER_ADMIN ||
+        role === UserRole.ORG_ADMIN ||
+        (permissions && permissions.includes(PERMISSIONS.APPROVE_WORK));
+      if (!isApproverOrAdmin) {
+        throw new BusinessRuleError(
+          'Deleting an approved work entry requires approval privileges (APPROVE_WORK or ORG_ADMIN).'
+        );
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Clean up snapshot statement lines from cancelled statements if any
+      if (statementLines.length > 0) {
+        await tx.statementLine.deleteMany({ where: { workEntryId: req.params.id } });
+      }
+
+      // Clean up snapshot invoice lines from cancelled invoices if any
+      if (invoiceLines.length > 0) {
+        await tx.invoiceLine.deleteMany({ where: { workEntryId: req.params.id } });
+      }
+
+      // Delete the work entry record
+      await tx.workEntry.delete({ where: { id: req.params.id } });
+
+      // Record audit log
+      await tx.auditLog.create({
         data: {
           organizationId,
           userId,
           action: 'DELETE',
           entityType: 'WorkEntry',
           entityId: entry.id,
-          description: `Deleted draft work entry ${entry.referenceNo}`,
+          description: `Permanently deleted ${entry.status.toLowerCase()} work entry ${entry.referenceNo}`,
+          metadata: {
+            referenceNo: entry.referenceNo,
+            itemNameAr: entry.itemNameAr,
+            itemNameEn: entry.itemNameEn,
+            quantity: entry.quantity.toString(),
+            unitPrice: entry.unitPrice.toString(),
+            totalAmount: entry.totalAmount.toString(),
+            status: entry.status,
+            operation: 'PERMANENT_DELETE',
+          },
           ipAddress: req.ip || req.socket.remoteAddress,
         },
-      }),
-    ]);
+      });
+    });
 
-    res.json({ success: true, message: 'Work entry deleted successfully' });
+    res.json({
+      success: true,
+      message: 'Work entry deleted successfully',
+      data: { id: entry.id, referenceNo: entry.referenceNo },
+    });
   }
 );
 

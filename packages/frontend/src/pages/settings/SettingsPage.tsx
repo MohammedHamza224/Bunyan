@@ -1,23 +1,31 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Building2, Shield, Users, Plus, CheckCircle2, AlertCircle, UserX, Activity, Trash2, Globe2, CreditCard, Ruler } from 'lucide-react'
+import {
+  Building2,
+  Users,
+  CheckCircle2,
+  AlertCircle,
+  Activity,
+  Globe2,
+  CreditCard,
+  Ruler,
+  FlaskConical,
+  Upload,
+  Trash2,
+  Image as ImageIcon,
+  Loader2,
+  X,
+} from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../store/authStore'
 import { AuditLogSettingsTab } from '../../components/settings/AuditLogSettingsTab'
 import { CountrySettingsTab } from '../../components/settings/CountrySettingsTab'
 import { BankAccountSettingsTab } from '../../components/settings/BankAccountSettingsTab'
 import { UnitsSettingsTab } from '../../components/settings/UnitsSettingsTab'
-
-const ALL_PERMISSIONS_LIST = [
-  { key: 'VIEW_DATA', ar: 'عرض البيانات', en: 'View Data' },
-  { key: 'CREATE_WORK', ar: 'تسجيل الأعمال', en: 'Register Works' },
-  { key: 'APPROVE_WORK', ar: 'اعتماد الأعمال', en: 'Approve Works' },
-  { key: 'CREATE_STATEMENTS', ar: 'إنشاء المستخلصات', en: 'Create Statements' },
-  { key: 'ISSUE_INVOICES', ar: 'إصدار الفواتير', en: 'Issue Invoices' },
-  { key: 'RECORD_PAYMENTS', ar: 'تسجيل المدفوعات', en: 'Record Payments' },
-  { key: 'MANAGE_SETTINGS', ar: 'إدارة الإعدادات والمستخدمين', en: 'Manage Settings & Users' },
-]
+import { UsersManagementTab } from '../../components/settings/UsersManagementTab'
+import { TestDataManagementTab } from '../../components/settings/TestDataManagementTab'
 
 export function SettingsPage() {
   const { t, i18n } = useTranslation()
@@ -26,8 +34,123 @@ export function SettingsPage() {
   const isAr = i18n.language === 'ar'
   const canManage = hasPermission('MANAGE_SETTINGS')
 
-  const [activeTab, setActiveTab] = useState<'org' | 'countries' | 'banks' | 'units' | 'users' | 'audit'>('org')
+  const [searchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const validTabs = ['org', 'countries', 'banks', 'units', 'users', 'audit', 'testData']
+  const [activeTab, setActiveTab] = useState<'org' | 'countries' | 'banks' | 'units' | 'users' | 'audit' | 'testData'>(
+    tabParam && validTabs.includes(tabParam) ? (tabParam as any) : 'org'
+  )
+
+  useEffect(() => {
+    if (tabParam && validTabs.includes(tabParam)) {
+      setActiveTab(tabParam as any)
+    }
+  }, [tabParam])
+
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // Company Logo State
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [logoError, setLogoError] = useState<string | null>(null)
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false)
+  const [isRemovingLogo, setIsRemovingLogo] = useState(false)
+
+  // Revoke object URL on cleanup
+  useEffect(() => {
+    return () => {
+      if (previewUrl && previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(previewUrl)
+      }
+    }
+  }, [previewUrl])
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLogoError(null)
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const validTypes = ['image/png', 'image/jpeg', 'image/webp']
+    if (!validTypes.includes(file.type)) {
+      setLogoError(t('settings.invalidLogoType'))
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+
+    const maxSize = 5 * 1024 * 1024 // 5MB
+    if (file.size > maxSize) {
+      setLogoError(t('settings.invalidLogoSize'))
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      return
+    }
+
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl)
+    }
+
+    setSelectedFile(file)
+    const objectUrl = URL.createObjectURL(file)
+    setPreviewUrl(objectUrl)
+  }
+
+  const handleCancelSelectedFile = () => {
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl)
+    }
+    setSelectedFile(null)
+    setPreviewUrl(null)
+    setLogoError(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleDirectUploadLogo = async () => {
+    if (!selectedFile) return
+    setIsUploadingLogo(true)
+    setLogoError(null)
+    try {
+      const uploadData = new FormData()
+      uploadData.append('logo', selectedFile)
+      const res = await api.post('/organizations/logo', uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const newLogoUrl = res.data?.data?.logoUrl || res.data?.logoUrl
+      setFormData((prev) => ({ ...prev, logoUrl: newLogoUrl }))
+      if (previewUrl && previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(previewUrl)
+      }
+      setSelectedFile(null)
+      setPreviewUrl(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      queryClient.invalidateQueries({ queryKey: ['orgSettings'] })
+      setStatusMsg({ type: 'success', text: t('settings.logoUploadedSuccess') })
+    } catch (err: any) {
+      setLogoError(err?.response?.data?.error?.message || err.message || t('errors.serverError'))
+    } finally {
+      setIsUploadingLogo(false)
+    }
+  }
+
+  const handleRemoveLogo = async () => {
+    setIsRemovingLogo(true)
+    setLogoError(null)
+    try {
+      await api.delete('/organizations/logo')
+      setFormData((prev) => ({ ...prev, logoUrl: '' }))
+      if (previewUrl && previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(previewUrl)
+      }
+      setSelectedFile(null)
+      setPreviewUrl(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      queryClient.invalidateQueries({ queryKey: ['orgSettings'] })
+      setStatusMsg({ type: 'success', text: t('settings.logoRemovedSuccess') })
+    } catch (err: any) {
+      setLogoError(err?.response?.data?.error?.message || err.message || t('errors.serverError'))
+    } finally {
+      setIsRemovingLogo(false)
+    }
+  }
 
   // Organization Settings State
   const [formData, setFormData] = useState({
@@ -36,6 +159,7 @@ export function SettingsPage() {
     logoUrl: '',
     phone: '',
     email: '',
+    website: '',
     address: '',
     city: '',
     vatNumber: '',
@@ -65,6 +189,7 @@ export function SettingsPage() {
         logoUrl: settings.logoUrl || '',
         phone: settings.phone || '',
         email: settings.email || '',
+        website: settings.website || '',
         address: settings.address || '',
         city: settings.city || '',
         vatNumber: settings.vatNumber || '',
@@ -97,15 +222,62 @@ export function SettingsPage() {
     },
   })
 
-  const handleSaveOrgSettings = (e: React.FormEvent) => {
+  const handleSaveOrgSettings = async (e: React.FormEvent) => {
     e.preventDefault()
     setStatusMsg(null)
+    setLogoError(null)
+
+    let finalLogoUrl = formData.logoUrl.trim() || null
+
+    if (selectedFile) {
+      try {
+        setIsUploadingLogo(true)
+        const uploadData = new FormData()
+        uploadData.append('logo', selectedFile)
+        const res = await api.post('/organizations/logo', uploadData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        finalLogoUrl = res.data?.data?.logoUrl || res.data?.logoUrl || finalLogoUrl
+        if (previewUrl && previewUrl.startsWith('blob:')) {
+          URL.revokeObjectURL(previewUrl)
+        }
+        setSelectedFile(null)
+        setPreviewUrl(null)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      } catch (err: any) {
+        setIsUploadingLogo(false)
+        const msg = err?.response?.data?.error?.message || err.message || t('errors.serverError')
+        setLogoError(msg)
+        setStatusMsg({ type: 'error', text: msg })
+        return
+      } finally {
+        setIsUploadingLogo(false)
+      }
+    }
+
+    const websiteTrimmed = formData.website.trim()
+    if (websiteTrimmed) {
+      try {
+        const parsed = new URL(websiteTrimmed)
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          throw new Error()
+        }
+      } catch {
+        const msg = isAr
+          ? 'الرجاء إدخال رابط موقع إلكتروني صالح يبدأ بـ http:// أو https:// (مثال: https://example.com)'
+          : 'Please enter a valid website URL starting with http:// or https:// (e.g. https://example.com)'
+        setStatusMsg({ type: 'error', text: msg })
+        return
+      }
+    }
+
     saveSettingsMutation.mutate({
       businessName: formData.businessName.trim() || null,
       businessNameEn: formData.businessNameEn.trim() || null,
-      logoUrl: formData.logoUrl.trim() || null,
+      logoUrl: finalLogoUrl,
       phone: formData.phone.trim() || null,
       email: formData.email.trim() || null,
+      website: websiteTrimmed || null,
       address: formData.address.trim() || null,
       city: formData.city.trim() || null,
       vatNumber: formData.vatNumber.trim() || null,
@@ -118,92 +290,6 @@ export function SettingsPage() {
       workEntryPrefix: formData.workEntryPrefix.trim() || 'WRK',
       selfApprovalAllowed: formData.selfApprovalAllowed,
     })
-  }
-
-  // Users Management State
-  const { data: usersList, isLoading: loadingUsers } = useQuery({
-    queryKey: ['orgUsers'],
-    queryFn: async () => {
-      const res = await api.get('/organizations/users')
-      return res.data?.data || res.data
-    },
-    enabled: activeTab === 'users',
-  })
-
-  const [newUser, setNewUser] = useState({
-    nameAr: '',
-    nameEn: '',
-    email: '',
-    password: '',
-    role: 'ORG_STAFF',
-    permissions: ['VIEW_DATA', 'CREATE_WORK'] as string[],
-  })
-
-  const createUserMutation = useMutation({
-    mutationFn: async (payload: any) => {
-      const res = await api.post('/organizations/users', payload)
-      return res.data?.data || res.data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
-      setNewUser({
-        nameAr: '',
-        nameEn: '',
-        email: '',
-        password: '',
-        role: 'ORG_STAFF',
-        permissions: ['VIEW_DATA', 'CREATE_WORK'],
-      })
-      setStatusMsg({
-        type: 'success',
-        text: isAr ? 'تمت إضافة المستخدم بنجاح' : 'User added successfully',
-      })
-    },
-    onError: (err: any) => {
-      setStatusMsg({
-        type: 'error',
-        text: err?.response?.data?.error?.message || t('errors.serverError'),
-      })
-    },
-  })
-
-  const deactivateUserMutation = useMutation({
-    mutationFn: async (userId: string) => {
-      await api.delete(`/organizations/users/${userId}`)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
-    },
-  })
-
-  const deleteUserPermanentMutation = useMutation({
-    mutationFn: async (userId: string) => {
-      await api.delete(`/organizations/users/${userId}?permanent=true`)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orgUsers'] })
-      setStatusMsg({
-        type: 'success',
-        text: isAr ? 'تم حذف المستخدم نهائياً بنجاح' : 'User deleted permanently',
-      })
-    },
-    onError: (err: any) => {
-      setStatusMsg({
-        type: 'error',
-        text:
-          err?.response?.data?.error?.message ||
-          (isAr ? 'تعذر حذف المستخدم' : 'Failed to delete user'),
-      })
-    },
-  })
-
-  const toggleNewUserPerm = (perm: string) => {
-    setNewUser((prev) => ({
-      ...prev,
-      permissions: prev.permissions.includes(perm)
-        ? prev.permissions.filter((p) => p !== perm)
-        : [...prev.permissions, perm],
-    }))
   }
 
   return (
@@ -290,21 +376,39 @@ export function SettingsPage() {
           </button>
 
           {canManage && (
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('audit')
-                setStatusMsg(null)
-              }}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === 'audit'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <Activity className="w-4 h-4" />
-              <span>{isAr ? 'سجل العمليات والأرشفة' : 'Audit Log & Retention'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('audit')
+                  setStatusMsg(null)
+                }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === 'audit'
+                    ? 'bg-white text-blue-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <Activity className="w-4 h-4" />
+                <span>{isAr ? 'سجل العمليات والأرشفة' : 'Audit Log & Retention'}</span>
+              </button>
+              <button
+                type="button"
+                data-testid="test-data-settings-tab-btn"
+                onClick={() => {
+                  setActiveTab('testData')
+                  setStatusMsg(null)
+                }}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  activeTab === 'testData'
+                    ? 'bg-white text-indigo-600 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <FlaskConical className="w-4 h-4" />
+                <span>{isAr ? 'إدارة البيانات التجريبية' : 'Test Data Management'}</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -372,20 +476,163 @@ export function SettingsPage() {
                   />
                 </div>
 
-                <div>
-                  <label htmlFor="logoUrl" className="block text-sm font-medium text-gray-700 mb-1">
-                    {t('settings.logo')} (URL)
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    {t('settings.logo')}
                   </label>
+
+                  {/* Hidden file input */}
                   <input
-                    id="logoUrl"
-                    type="url"
-                    dir="ltr"
-                    disabled={!canManage}
-                    value={formData.logoUrl}
-                    onChange={(e) => setFormData({ ...formData, logoUrl: e.target.value })}
-                    placeholder="https://example.com/logo.png"
-                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                    ref={fileInputRef}
+                    type="file"
+                    id="company-logo-file-input"
+                    data-testid="company-logo-file-input"
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={!canManage || isUploadingLogo || isRemovingLogo}
+                    onChange={handleFileChange}
+                    className="hidden"
                   />
+
+                  {/* Logo Display / Upload Container */}
+                  <div className="p-4 border border-gray-200 rounded-xl bg-gray-50/60 flex flex-col sm:flex-row items-center gap-5">
+                    {/* Logo Preview Area */}
+                    <div className="relative w-28 h-28 shrink-0 bg-white border border-gray-200 rounded-xl flex items-center justify-center p-2 shadow-2xs overflow-hidden">
+                      {previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt="Selected Logo Preview"
+                          data-testid="logo-preview-img"
+                          className="max-w-full max-h-full object-contain"
+                        />
+                      ) : formData.logoUrl ? (
+                        <img
+                          src={formData.logoUrl}
+                          alt="Current Company Logo"
+                          data-testid="logo-current-img"
+                          className="max-w-full max-h-full object-contain"
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-gray-400 text-center p-2">
+                          <ImageIcon className="w-8 h-8 mb-1 text-gray-300" />
+                          <span className="text-[11px] leading-tight">
+                            {isAr ? 'لا يوجد شعار' : 'No Logo'}
+                          </span>
+                        </div>
+                      )}
+
+                      {(isUploadingLogo || isRemovingLogo) && (
+                        <div className="absolute inset-0 bg-white/70 backdrop-blur-[1px] flex items-center justify-center">
+                          <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Controls & Instructions */}
+                    <div className="flex-1 space-y-2.5 text-center sm:text-start">
+                      <div className="space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
+                          <span className="text-sm font-semibold text-gray-900">
+                            {previewUrl
+                              ? isAr
+                                ? 'تم تحديد صورة جديدة'
+                                : 'New image selected'
+                              : formData.logoUrl
+                              ? isAr
+                                ? 'شعار الشركة الحالي'
+                                : 'Current Company Logo'
+                              : isAr
+                              ? 'إضافة شعار الشركة'
+                              : 'Add Company Logo'}
+                          </span>
+                          {previewUrl && (
+                            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                              {isAr ? 'معاينة غير محفوظة' : 'Unsaved preview'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          {t('settings.logoUploadHelp')}
+                        </p>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex flex-wrap items-center gap-2.5 justify-center sm:justify-start">
+                        {canManage && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => fileInputRef.current?.click()}
+                              disabled={isUploadingLogo || isRemovingLogo}
+                              data-testid="select-logo-btn"
+                              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                            >
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>
+                                {formData.logoUrl || previewUrl
+                                  ? t('settings.changeLogo')
+                                  : t('settings.uploadLogo')}
+                              </span>
+                            </button>
+
+                            {selectedFile && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={handleDirectUploadLogo}
+                                  disabled={isUploadingLogo}
+                                  data-testid="upload-logo-confirm-btn"
+                                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                                >
+                                  {isUploadingLogo ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  ) : (
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                  )}
+                                  <span>{isAr ? 'تأكيد الرفع' : 'Confirm Upload'}</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={handleCancelSelectedFile}
+                                  disabled={isUploadingLogo}
+                                  data-testid="cancel-logo-selection-btn"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-gray-500 hover:text-gray-700 text-xs font-medium rounded-lg transition-colors cursor-pointer"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>{isAr ? 'إلغاء' : 'Cancel'}</span>
+                                </button>
+                              </>
+                            )}
+
+                            {(formData.logoUrl || previewUrl) && !selectedFile && (
+                              <button
+                                type="button"
+                                onClick={handleRemoveLogo}
+                                disabled={isRemovingLogo || isUploadingLogo}
+                                data-testid="remove-logo-btn"
+                                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-white border border-red-200 hover:bg-red-50 text-red-600 text-xs font-semibold rounded-lg shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                              >
+                                {isRemovingLogo ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                )}
+                                <span>{t('settings.removeLogo')}</span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+
+                      {/* Error Message if any */}
+                      {logoError && (
+                        <div className="flex items-center gap-1.5 text-xs text-red-600 font-medium" data-testid="logo-error-msg">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{logoError}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div>
@@ -410,6 +657,7 @@ export function SettingsPage() {
                   </label>
                   <input
                     id="phone"
+                    data-testid="company-phone-input"
                     type="text"
                     dir="ltr"
                     disabled={!canManage}
@@ -430,6 +678,23 @@ export function SettingsPage() {
                     disabled={!canManage}
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="companyWebsite" className="block text-sm font-medium text-gray-700 mb-1">
+                    {t('settings.companyWebsite')}
+                  </label>
+                  <input
+                    id="companyWebsite"
+                    data-testid="company-website-input"
+                    type="url"
+                    dir="ltr"
+                    disabled={!canManage}
+                    value={formData.website}
+                    onChange={(e) => setFormData({ ...formData, website: e.target.value })}
+                    placeholder="https://example.com"
                     className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
                   />
                 </div>
@@ -561,203 +826,7 @@ export function SettingsPage() {
       )}
 
       {activeTab === 'users' && (
-        /* Users & Granular Permissions Tab */
-        <div className="space-y-6">
-          {canManage && (
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-              <div className="flex items-center gap-2 border-b border-gray-100 pb-3 mb-4">
-                <Plus className="w-5 h-5 text-blue-600" />
-                <h2 className="text-base font-semibold text-gray-900">{t('settings.addUser')}</h2>
-              </div>
-
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  setStatusMsg(null)
-                  createUserMutation.mutate(newUser)
-                }}
-                className="space-y-4"
-              >
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      {t('settings.nameAr')} *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newUser.nameAr}
-                      onChange={(e) => setNewUser({ ...newUser, nameAr: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      {t('auth.email')} *
-                    </label>
-                    <input
-                      type="email"
-                      required
-                      dir="ltr"
-                      value={newUser.email}
-                      onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      {t('auth.password')} *
-                    </label>
-                    <input
-                      type="password"
-                      required
-                      dir="ltr"
-                      value={newUser.password}
-                      onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      {t('settings.userRole')}
-                    </label>
-                    <select
-                      value={newUser.role}
-                      onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
-                    >
-                      <option value="ORG_STAFF">{t('settings.user')}</option>
-                      <option value="ORG_MANAGER">{t('settings.manager')}</option>
-                      <option value="ORG_ADMIN">{t('settings.orgAdmin')}</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Granular Permissions Selection */}
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
-                    <Shield className="w-4 h-4 text-blue-600" />
-                    <span>{isAr ? 'الصلاحيات المخصصة للمستخدم' : 'Customizable User Permissions'}</span>
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
-                    {ALL_PERMISSIONS_LIST.map((perm) => (
-                      <label
-                        key={perm.key}
-                        className="flex items-center gap-2 p-2.5 rounded-lg border border-gray-200 hover:bg-gray-50 cursor-pointer text-xs font-medium text-gray-700"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={
-                            newUser.role === 'ORG_ADMIN' || newUser.permissions.includes(perm.key)
-                          }
-                          disabled={newUser.role === 'ORG_ADMIN'}
-                          onChange={() => toggleNewUserPerm(perm.key)}
-                          className="rounded text-blue-600"
-                        />
-                        <span>{isAr ? perm.ar : perm.en}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex justify-end">
-                  <button
-                    type="submit"
-                    disabled={createUserMutation.isPending}
-                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg"
-                  >
-                    {createUserMutation.isPending ? t('common.loading') : t('settings.addUser')}
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
-
-          {/* Users Table */}
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-base font-semibold text-gray-900">{t('settings.users')}</h2>
-            </div>
-
-            {loadingUsers ? (
-              <div className="p-8 text-center text-sm text-gray-500">{t('common.loading')}</div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm text-start">
-                  <thead className="bg-gray-50 text-gray-600 text-xs uppercase border-b border-gray-200">
-                    <tr>
-                      <th className="px-6 py-3 text-start">{t('common.name')}</th>
-                      <th className="px-6 py-3 text-start">{t('common.email')}</th>
-                      <th className="px-6 py-3 text-start">{t('settings.userRole')}</th>
-                      <th className="px-6 py-3 text-start">{t('common.status')}</th>
-                      {canManage && <th className="px-6 py-3 text-end">{t('common.actions')}</th>}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {(usersList || []).map((u: any) => (
-                      <tr key={u.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-3.5 font-medium text-gray-900">{u.nameAr}</td>
-                        <td className="px-6 py-3.5 text-gray-600" dir="ltr">
-                          {u.email}
-                        </td>
-                        <td className="px-6 py-3.5">
-                          <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
-                            {u.role}
-                          </span>
-                        </td>
-                        <td className="px-6 py-3.5">
-                          <span
-                            className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                              u.isActive
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-gray-100 text-gray-600'
-                            }`}
-                          >
-                            {u.isActive ? t('common.active') : t('common.inactive')}
-                          </span>
-                        </td>
-                        {canManage && (
-                          <td className="px-6 py-3.5 text-end">
-                            {u.id !== user?.id && u.isActive && (
-                              <button
-                                type="button"
-                                onClick={() => deactivateUserMutation.mutate(u.id)}
-                                className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 hover:text-amber-800"
-                              >
-                                <UserX className="w-4 h-4" />
-                                <span>{isAr ? 'تعطيل' : 'Deactivate'}</span>
-                              </button>
-                            )}
-                            {u.id !== user?.id && !u.isActive && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (
-                                    window.confirm(
-                                      isAr
-                                        ? `هل أنت متأكد من الحذف النهائي للمستخدم ${u.email}؟ لا يمكن حذف المستخدم إلا إذا لم يكن له أي سجلات نشاط سابقة في النظام.`
-                                        : `Are you sure you want to permanently delete user ${u.email}? This is only permitted if they have zero historical activity.`
-                                    )
-                                  ) {
-                                    deleteUserPermanentMutation.mutate(u.id)
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-700"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                                <span>{isAr ? 'حذف نهائي' : 'Delete'}</span>
-                              </button>
-                            )}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+        <UsersManagementTab isAr={isAr} canManage={canManage} />
       )}
 
       {activeTab === 'units' && (
@@ -772,6 +841,10 @@ export function SettingsPage() {
           isAr={isAr}
           isAdmin={user?.role === 'ORG_ADMIN'}
         />
+      )}
+
+      {activeTab === 'testData' && canManage && (
+        <TestDataManagementTab />
       )}
     </div>
   )

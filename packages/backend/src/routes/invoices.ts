@@ -12,6 +12,7 @@ import {
   NotFoundError,
   ValidationError,
   BusinessRuleError,
+  AuthorizationError,
 } from '../middleware/errorHandler';
 import {
   InvoiceStatus,
@@ -22,6 +23,7 @@ import {
   ZatcaStatus,
   ClientStatus,
   Prisma,
+  UserRole,
 } from '@prisma/client';
 import { getNextSequenceNumber } from '../utils/sequences';
 import { calculateVat, roundDecimal } from '../utils/finance';
@@ -34,6 +36,7 @@ import {
   generateZatcaQrDataUrl,
   generateZatcaQrTlvBase64,
 } from '../utils/zatca';
+import { zatcaService } from '../services/zatcaService';
 
 const router = Router();
 
@@ -825,13 +828,34 @@ router.put('/:id', requirePermission(PERMISSIONS.ISSUE_INVOICES), async (req, re
     );
   }
 
-  const { dueDate, supplyDate, notes } = req.body;
+  const { dueDate, supplyDate, notes, discountAmount } = req.body;
+
+  let recalculatedFields: Record<string, any> = {};
+  if (discountAmount !== undefined && discountAmount !== null && discountAmount !== '') {
+    const newDiscount = roundDecimal(new Decimal(discountAmount.toString()), 4);
+    if (newDiscount.lt(0) || newDiscount.gt(existing.subtotal)) {
+      throw new ValidationError('discountAmount must be between 0 and subtotal');
+    }
+    const taxableAmount = roundDecimal(existing.subtotal.sub(newDiscount), 4);
+    const vatAmount = calculateVat(taxableAmount, existing.vatRate);
+    const totalAmount = roundDecimal(taxableAmount.add(vatAmount), 4);
+    const remainingAmount = roundDecimal(totalAmount.sub(existing.paidAmount), 4);
+    recalculatedFields = {
+      discountAmount: newDiscount,
+      taxableAmount,
+      vatAmount,
+      totalAmount,
+      remainingAmount,
+    };
+  }
+
   const updated = await prisma.invoice.update({
     where: { id: req.params.id },
     data: {
       ...(dueDate !== undefined && { dueDate: dueDate ? new Date(dueDate) : null }),
       ...(supplyDate !== undefined && { supplyDate: supplyDate ? new Date(supplyDate) : null }),
       ...(notes !== undefined && { notes }),
+      ...recalculatedFields,
     },
   });
 
@@ -950,8 +974,8 @@ router.post(
 
       const prevResponse = (invoice.zatcaResponse as Record<string, any>) || {};
 
-      // Status is SUBMITTED (Locally validated, ICV/PIH chained & ready for ZATCA FATOORA API integration)
-      const zatcaStatus = ZatcaStatus.SUBMITTED;
+      // Status is PENDING_SUBMISSION (Locally validated, ICV/PIH chained & ready for transmission to ZATCA)
+      const zatcaStatus = ZatcaStatus.PENDING_SUBMISSION;
 
       const inv = await tx.invoice.update({
         where: { id: req.params.id },
@@ -1207,7 +1231,7 @@ router.post(
           cancelledById: originalInvoice.id, // Links this note to the original invoice
           cancellationReason: reason.trim(), // Stores the ZATCA InstructionNote
           notes: `${noteType === InvoiceType.CREDIT_NOTE ? 'إشعار دائن' : 'إشعار مدين'} مرتبط بالفاتورة ${originalInvoice.referenceNo}: ${reason.trim()}`,
-          zatcaStatus: ZatcaStatus.SUBMITTED,
+          zatcaStatus: ZatcaStatus.PENDING_SUBMISSION,
           zatcaUuid: zatcaBundle.zatcaUuid,
           zatcaQrCode: zatcaBundle.zatcaQrCode,
           zatcaXml: zatcaBundle.zatcaXml,
@@ -1552,6 +1576,65 @@ router.get('/:id/zatca', requirePermission(PERMISSIONS.VIEW_DATA), async (req, r
   });
 });
 
+// ─── Submit Invoice to ZATCA FATOORA API ────────────────────────
+
+/**
+ * POST /api/invoices/:id/zatca/submit
+ * Submits an approved invoice to the official ZATCA FATOORA API
+ * (Clearance for B2B Standard Tax Invoice, Reporting for B2C Simplified Tax Invoice).
+ * If official CSID credentials are not configured, returns 422 with clear diagnostic instructions.
+ */
+router.post('/:id/zatca/submit', requirePermission(PERMISSIONS.ISSUE_INVOICES), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId } = authReq.user;
+
+  try {
+    const result = await zatcaService.processZatcaSubmission(req.params.id, organizationId);
+    res.status(result.canSubmit && result.success ? 200 : 422).json({
+      success: result.success,
+      data: result,
+      message: result.message,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: {
+        code: 'ZATCA_SUBMISSION_ERROR',
+        message: err.message,
+      },
+    });
+  }
+});
+
+// ─── Offline Local ZATCA Compliance Verification ─────────────────
+
+/**
+ * GET /api/invoices/:id/zatca/verify
+ * Performs complete local verification against ZATCA rules:
+ * Mandatory fields, UBL 2.1 XML schema compliance, SHA-256 hash match,
+ * TLV QR code encoding/decoding, ICV and PIH chain link.
+ */
+router.get('/:id/zatca/verify', requirePermission(PERMISSIONS.VIEW_DATA), async (req, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const { organizationId } = authReq.user;
+
+  try {
+    const verification = await zatcaService.verifyInvoiceOffline(req.params.id, organizationId);
+    res.json({
+      success: true,
+      data: verification,
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      success: false,
+      error: {
+        code: 'ZATCA_VERIFY_ERROR',
+        message: err.message,
+      },
+    });
+  }
+});
+
 // ─── PDF Data ───────────────────────────────────────────────────
 
 /**
@@ -1597,15 +1680,17 @@ router.get('/:id/pdf-data', requirePermission(PERMISSIONS.VIEW_DATA), async (req
 
 /**
  * DELETE /api/invoices/:id
- * Permanently delete a DRAFT invoice with 0 payments.
+ * Permanently delete a DRAFT or CANCELLED invoice with 0 payments and no protected dependencies.
+ * Also supports administrative test data cleanup for authorized admins (?testCleanup=true).
  */
 router.delete(
   '/:id',
   requirePermission(PERMISSIONS.ISSUE_INVOICES),
   async (req, res: Response) => {
     const authReq = req as AuthenticatedRequest;
-    const { organizationId, id: userId } = authReq.user;
+    const { organizationId, id: userId, role, permissions } = authReq.user;
     const { id } = req.params;
+    const isTestCleanup = req.query.testCleanup === 'true' || req.body?.isTestCleanup === true;
 
     const invoice = await prisma.invoice.findUnique({
       where: { id },
@@ -1618,38 +1703,132 @@ router.delete(
     if (!invoice) throw new NotFoundError('Invoice');
     assertSameOrg(organizationId, invoice.organizationId, 'Invoice');
 
-    if (invoice.payments && invoice.payments.length > 0) {
+    // Safeguard 1: ZATCA Compliance check (always enforced, even in test cleanup)
+    if (
+      invoice.zatcaStatus === ZatcaStatus.REPORTED ||
+      invoice.zatcaStatus === ZatcaStatus.CLEARED
+    ) {
       throw new BusinessRuleError(
-        'Cannot delete an invoice that has recorded payments. Delete all payments first or cancel the invoice instead.'
+        'Cannot delete an invoice that has been officially reported to or cleared by ZATCA (الهيئة العامة للزكاة والضريبة والجمارك). Official tax invoices must be retained for legal and compliance audit trails.'
       );
     }
 
-    if (invoice.status !== InvoiceStatus.DRAFT) {
-      throw new BusinessRuleError(
-        `Cannot delete invoice with status ${invoice.status}. Only DRAFT invoices can be deleted; approved or sent invoices must be cancelled to preserve financial auditability.`
-      );
+    const isAdmin =
+      role === UserRole.SUPER_ADMIN ||
+      role === UserRole.ORG_ADMIN ||
+      (permissions && permissions.includes(PERMISSIONS.MANAGE_SETTINGS));
+
+    if (isTestCleanup) {
+      if (!isAdmin) {
+        throw new AuthorizationError(
+          'Administrative test data cleanup requires MANAGE_SETTINGS or ORG_ADMIN privileges.'
+        );
+      }
+    } else {
+      // Normal business deletion rules:
+      const canDelete =
+        invoice.status === InvoiceStatus.DRAFT ||
+        invoice.status === InvoiceStatus.CANCELLED;
+
+      if (!canDelete) {
+        throw new BusinessRuleError(
+          `Cannot delete invoice with status ${invoice.status}. Only DRAFT or CANCELLED invoices can be deleted; approved or sent invoices must be cancelled first to preserve financial auditability.`
+        );
+      }
+
+      // Safeguard 2: Payments check (active or recorded payments)
+      if (invoice.payments && invoice.payments.length > 0) {
+        throw new BusinessRuleError(
+          'Cannot delete an invoice that has associated payment records. Delete or reverse all payment records first to preserve financial auditability.'
+        );
+      }
+
+      if (invoice.paidAmount.gt(0)) {
+        throw new BusinessRuleError(
+          'Cannot delete an invoice that has recorded paid amounts. Financial payment history must be preserved.'
+        );
+      }
+
+      // Safeguard 3: Linked Credit or Debit notes
+      const linkedNotes = await prisma.invoice.findMany({
+        where: { cancelledById: invoice.id, organizationId },
+        select: { id: true, referenceNo: true, invoiceType: true },
+      });
+      if (linkedNotes.length > 0) {
+        throw new BusinessRuleError(
+          `Cannot delete an invoice that has linked credit or debit notes (${linkedNotes.map((n) => n.referenceNo).join(', ')}). Delete or handle the associated notes first.`
+        );
+      }
     }
 
     await prisma.$transaction(async (tx) => {
-      // Reconcile any work entries linked through direct invoice lines
-      for (const line of invoice.lines) {
-        if (line.workEntryId) {
-          const workEntry = await tx.workEntry.findUnique({ where: { id: line.workEntryId } });
-          if (workEntry) {
-            const newBilledQty = Math.max(0, Number(workEntry.billedQuantity) - Number(line.quantity));
-            const newStatus =
-              newBilledQty === 0
-                ? WorkEntryStatus.APPROVED
-                : newBilledQty < Number(workEntry.quantity)
-                ? WorkEntryStatus.PARTIALLY_BILLED
-                : WorkEntryStatus.FULLY_BILLED;
+      // If administrative test cleanup, cascade delete linked notes and payments
+      if (isTestCleanup) {
+        const linkedNotes = await tx.invoice.findMany({
+          where: { cancelledById: invoice.id, organizationId },
+          select: { id: true },
+        });
+        if (linkedNotes.length > 0) {
+          const noteIds = linkedNotes.map((n) => n.id);
+          await tx.invoiceLine.deleteMany({ where: { invoiceId: { in: noteIds } } });
+          await tx.payment.deleteMany({ where: { invoiceId: { in: noteIds } } });
+          await tx.invoice.deleteMany({ where: { id: { in: noteIds } } });
+        }
 
-            await tx.workEntry.update({
-              where: { id: line.workEntryId },
-              data: {
-                billedQuantity: newBilledQty,
-                status: newStatus,
-              },
+        // Delete associated payment records
+        if (invoice.payments && invoice.payments.length > 0) {
+          await tx.payment.deleteMany({ where: { invoiceId: id } });
+        }
+      }
+
+      // Reconcile any work entries linked through direct invoice lines
+      if (invoice.status === InvoiceStatus.DRAFT || isTestCleanup) {
+        for (const line of invoice.lines) {
+          if (line.workEntryId) {
+            const workEntry = await tx.workEntry.findUnique({ where: { id: line.workEntryId } });
+            if (workEntry) {
+              const newBilledQty = Math.max(0, Number(workEntry.billedQuantity) - Number(line.quantity));
+              const newStatus =
+                newBilledQty === 0
+                  ? WorkEntryStatus.APPROVED
+                  : newBilledQty < Number(workEntry.quantity)
+                  ? WorkEntryStatus.PARTIALLY_BILLED
+                  : WorkEntryStatus.FULLY_BILLED;
+
+              await tx.workEntry.update({
+                where: { id: line.workEntryId },
+                data: {
+                  billedQuantity: newBilledQty,
+                  status: newStatus,
+                },
+              });
+            }
+          }
+        }
+      }
+
+      // Reconcile linked statement(s) if any
+      const respJson = (invoice.zatcaResponse as Record<string, any>) || {};
+      const linkedStatementIds: string[] = Array.isArray(respJson.statementIds)
+        ? respJson.statementIds
+        : invoice.statementId
+        ? [invoice.statementId]
+        : [];
+
+      if (linkedStatementIds.length > 0) {
+        for (const stmtId of linkedStatementIds) {
+          const otherInvoices = await tx.invoice.count({
+            where: {
+              id: { not: id },
+              statementId: stmtId,
+              organizationId,
+              status: { not: InvoiceStatus.CANCELLED },
+            },
+          });
+          if (otherInvoices === 0) {
+            await tx.statement.updateMany({
+              where: { id: stmtId, organizationId, status: StatementStatus.INVOICED },
+              data: { status: StatementStatus.APPROVED },
             });
           }
         }
@@ -1669,12 +1848,17 @@ router.delete(
           action: 'DELETE',
           entityType: 'Invoice',
           entityId: id,
-          description: `Permanently deleted draft invoice ${invoice.referenceNo}`,
+          description: isTestCleanup
+            ? `Admin test data cleanup permanently deleted invoice ${invoice.referenceNo} (reversed ${invoice.payments?.length || 0} payments)`
+            : `Permanently deleted ${invoice.status.toLowerCase()} invoice ${invoice.referenceNo}`,
           metadata: {
             referenceNo: invoice.referenceNo,
+            status: invoice.status,
+            previousStatus: invoice.status,
             invoiceType: invoice.invoiceType,
             totalAmount: invoice.totalAmount.toString(),
-            operation: 'PERMANENT_DELETE',
+            operation: isTestCleanup ? 'ADMIN_TEST_DATA_CLEANUP' : 'PERMANENT_DELETE',
+            paymentsReversed: invoice.payments?.length || 0,
           },
           ipAddress: req.ip || req.socket.remoteAddress,
         },
@@ -1683,8 +1867,12 @@ router.delete(
 
     res.json({
       success: true,
-      message: 'Draft invoice deleted permanently',
-      data: { id, referenceNo: invoice.referenceNo },
+      message: isTestCleanup
+        ? 'Invoice and associated test data deleted successfully'
+        : invoice.status === InvoiceStatus.CANCELLED
+        ? 'Cancelled invoice deleted permanently'
+        : 'Draft invoice deleted permanently',
+      data: { id, referenceNo: invoice.referenceNo, isTestCleanup },
     });
   }
 );

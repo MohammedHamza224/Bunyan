@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -27,9 +27,26 @@ export function ClientsPage() {
   const canEdit = hasPermission('CREATE_WORK')
   const isAdmin = user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN'
 
+  const [searchParams, setSearchParams] = useSearchParams()
+
   // Filters & Pagination
-  const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'ACTIVE' | 'ARCHIVED' | 'ALL'>('ACTIVE')
+  const initialStatus = (searchParams.get('status') as any) || 'ACTIVE'
+  const initialSearch = searchParams.get('search') || ''
+  const [search, setSearch] = useState(initialSearch)
+  const [statusFilter, setStatusFilter] = useState<'ACTIVE' | 'ARCHIVED' | 'ALL'>(
+    ['ACTIVE', 'ARCHIVED', 'ALL'].includes(initialStatus) ? initialStatus : 'ACTIVE'
+  )
+
+  useEffect(() => {
+    const statusParam = searchParams.get('status') as any
+    if (statusParam && ['ACTIVE', 'ARCHIVED', 'ALL'].includes(statusParam) && statusParam !== statusFilter) {
+      setStatusFilter(statusParam)
+    }
+    const searchParam = searchParams.get('search')
+    if (searchParam !== null && searchParam !== search) {
+      setSearch(searchParam)
+    }
+  }, [searchParams])
   const [typeFilter, setTypeFilter] = useState('')
   const [sortBy, setSortBy] = useState<'createdAt' | 'nameAr'>('createdAt')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
@@ -394,13 +411,27 @@ export function ClientsPage() {
                   ? 'لا توجد أي سجلات عملاء مؤرشفة حالياً.'
                   : 'No archived client records found.'
                 : isAr
-                ? 'ابدأ بإضافة عميل جديد لإدارة مواقعه وأعماله وفواتيره.'
-                : 'Get started by creating your first client.'}
+                ? 'لا توجد سجلات عملاء نشطة مطابقة للفلاتر الحالية.'
+                : 'No active client records matching current filters.'}
             </p>
+            {statusFilter === 'ACTIVE' && (
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter('ALL')
+                    setSearchParams({ status: 'ALL' })
+                  }}
+                  className="px-3 py-1.5 bg-[#EAF0F5] hover:bg-[#d8e3ed] text-[#18324B] font-semibold rounded-lg text-xs transition-colors"
+                >
+                  {isAr ? 'عرض جميع العملاء (بما في ذلك المؤرشفين)' : 'Show All Clients (Including Archived)'}
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs text-start">
+            <table className="w-full min-w-[720px] print:min-w-0 text-xs text-start">
               <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
                 <tr>
                   <th className="px-5 py-3.5 text-start font-semibold">

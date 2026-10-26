@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
@@ -6,7 +6,7 @@ import {
   LayoutDashboard,
   Users,
   MapPin,
-  Package,
+  ListChecks,
   ClipboardList,
   FileText,
   Receipt,
@@ -33,6 +33,17 @@ export function AppLayout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  // Close mobile sidebar on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && sidebarOpen) {
+        setSidebarOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [sidebarOpen])
 
   const { data: orgSettings } = useQuery({
     queryKey: ['orgSettings'],
@@ -61,7 +72,7 @@ export function AppLayout() {
     { to: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },
     { to: '/clients', icon: Users, label: t('nav.clients') },
     { to: '/sites', icon: MapPin, label: t('nav.sites') },
-    { to: '/work-items', icon: Package, label: t('nav.workItems') },
+    { to: '/work-items', icon: ListChecks, label: t('nav.workItems') },
     { to: '/work-entries', icon: ClipboardList, label: t('nav.workEntries') },
     { to: '/statements', icon: FileText, label: t('nav.statements') },
     { to: '/invoices', icon: Receipt, label: t('nav.invoices') },
@@ -69,7 +80,7 @@ export function AppLayout() {
     {
       to: '/reports',
       icon: BarChart3,
-      label: isAr ? 'التقارير وكشوف الحساب' : 'Reports & Analytics',
+      label: isAr ? 'التقارير وكشوف الحسابات' : 'Reports & Statements',
     },
     { to: '/audit-logs', icon: ShieldCheck, label: isAr ? 'سجل التدقيق' : 'Audit Logs' },
     { to: '/settings', icon: Settings, label: t('nav.settings') },
@@ -95,6 +106,9 @@ export function AppLayout() {
       {/* Sidebar — Deep Navy Construction Identity (Independently Scrollable) */}
       <aside
         data-testid="app-sidebar"
+        role="dialog"
+        aria-modal={sidebarOpen ? 'true' : undefined}
+        aria-label={isAr ? 'قائمة التنقل الجانبية' : 'Navigation Menu'}
         className={`fixed lg:static inset-y-0 ${
           isAr ? 'right-0' : 'left-0'
         } z-30 h-full max-h-screen max-h-[100dvh] min-h-0 shrink-0 overflow-hidden ${
@@ -161,6 +175,7 @@ export function AppLayout() {
                 to={item.to}
                 title={sidebarCollapsed ? item.label : undefined}
                 onClick={() => setSidebarOpen(false)}
+                data-testid={`nav-item-${item.to.replace('/', '')}`}
                 className={({ isActive }) =>
                   `relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                     isActive
@@ -179,6 +194,8 @@ export function AppLayout() {
                       />
                     )}
                     <Icon
+                      data-testid={`nav-icon-${item.to.replace('/', '')}`}
+                      aria-hidden="true"
                       className={`w-5 h-5 shrink-0 ${
                         isActive ? 'text-[#E6A23C]' : 'text-gray-400'
                       }`}
@@ -221,13 +238,13 @@ export function AppLayout() {
         className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden print:h-auto print:overflow-visible print:block"
       >
         {/* Topbar */}
-        <header className="h-16 shrink-0 bg-white border-b border-[#E4E7EC] px-4 lg:px-8 flex items-center justify-between z-10 print:hidden shadow-xs">
-          <div className="flex items-center gap-3">
+        <header className="h-16 shrink-0 bg-white border-b border-[#E4E7EC] px-3 sm:px-4 lg:px-8 flex items-center justify-between z-10 print:hidden shadow-xs gap-2">
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="lg:hidden p-2 text-[#1F2937] hover:bg-[#EAF0F5] rounded-lg"
-              aria-label="Open navigation menu"
+              className="lg:hidden p-2 text-[#1F2937] hover:bg-[#EAF0F5] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#E6A23C]"
+              aria-label={isAr ? 'فتح قائمة التنقل' : 'Open navigation menu'}
             >
               <Menu className="w-5 h-5" />
             </button>
@@ -235,7 +252,7 @@ export function AppLayout() {
             <button
               type="button"
               onClick={() => setSidebarCollapsed((prev) => !prev)}
-              className="hidden lg:flex p-2 text-[#667085] hover:text-[#18324B] hover:bg-[#EAF0F5] rounded-lg transition-colors"
+              className="hidden lg:flex p-2 text-[#667085] hover:text-[#18324B] hover:bg-[#EAF0F5] rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-[#E6A23C]"
               aria-label="Toggle sidebar width"
               title={isAr ? 'طي / توسيع القائمة الجانبية' : 'Collapse / Expand Sidebar'}
             >
@@ -249,20 +266,21 @@ export function AppLayout() {
             {currentNav && (
               <div className="hidden sm:flex items-center gap-2 text-sm font-bold text-[#18324B]">
                 <span className="w-1.5 h-4 rounded-full bg-[#E6A23C]" />
-                <span>{currentNav.label}</span>
+                <span className="truncate max-w-[140px] md:max-w-none">{currentNav.label}</span>
               </div>
             )}
           </div>
 
-          <div className="flex items-center gap-2.5 sm:gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <HeaderCurrentDate />
             <button
               type="button"
               onClick={toggleLanguage}
               data-testid="lang-toggle-btn"
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-[#E4E7EC] bg-white text-sm font-semibold text-[#1F2937] hover:bg-[#EAF0F5] transition-colors shadow-xs"
+              className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-lg border border-[#E4E7EC] bg-white text-xs sm:text-sm font-semibold text-[#1F2937] hover:bg-[#EAF0F5] transition-colors shadow-xs shrink-0"
+              title={isAr ? 'Switch to English' : 'التحويل إلى العربية'}
             >
-              <Globe className="w-4 h-4 text-[#18324B]" />
+              <Globe className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#18324B] shrink-0" />
               <span>{isAr ? 'English' : 'العربية'}</span>
             </button>
           </div>

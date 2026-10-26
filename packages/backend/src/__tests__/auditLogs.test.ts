@@ -315,4 +315,127 @@ describe('Audit Log Management & Security Enhancement', () => {
       expect((cleanupAudit?.metadata as any)?.operation).toBe('RETENTION_CLEANUP');
     });
   });
+
+  describe('6. Direct Administrative Clear Audit Log', () => {
+    it('returns clear preview with total and statutory breakdown', async () => {
+      const res = await request
+        .get('/api/audit-logs/clear/preview')
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.totalRecords).toBeGreaterThan(0);
+      expect(typeof res.body.data.statutoryCount).toBe('number');
+    });
+
+    it('denies ORG_STAFF from invoking clear audit log endpoint (403 Forbidden)', async () => {
+      const res = await request
+        .post('/api/audit-logs/clear')
+        .send({ confirmed: true })
+        .set(authHeader(org.staffAccessToken!));
+
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects clear operation without explicit confirmation', async () => {
+      const res = await request
+        .post('/api/audit-logs/clear')
+        .send({ confirmed: false })
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('Explicit confirmation');
+    });
+
+    it('clears operational audit logs while preserving statutory records without infinite log noise', async () => {
+      // First seed a customer and site audit log (operational records)
+      await prisma.auditLog.createMany({
+        data: [
+          {
+            organizationId: org.orgId,
+            userId: org.userId,
+            action: AuditAction.CREATE,
+            entityType: 'Client',
+            entityId: 'client-test-999',
+            description: 'Created Client Al-Amal',
+            metadata: { clientName: 'شركة الأمل' },
+          },
+          {
+            organizationId: org.orgId,
+            userId: org.userId,
+            action: AuditAction.DELETE,
+            entityType: 'Client',
+            entityId: 'client-test-999',
+            description: 'Deleted Client Al-Amal',
+            metadata: { clientName: 'شركة الأمل', isDeleted: true },
+          },
+          {
+            organizationId: org.orgId,
+            userId: org.userId,
+            action: AuditAction.CREATE,
+            entityType: 'Site',
+            entityId: 'site-test-888',
+            description: 'Created Project Site',
+          },
+        ],
+      });
+
+      const countBefore = await prisma.auditLog.count({ where: { organizationId: org.orgId } });
+      expect(countBefore).toBeGreaterThanOrEqual(3);
+
+      const res = await request
+        .post('/api/audit-logs/clear')
+        .send({ confirmed: true, preserveStatutory: true })
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.purgedCount).toBeGreaterThanOrEqual(3);
+
+      // Verify that operational records (Clients, Sites) were completely purged
+      const operationalRemaining = await prisma.auditLog.count({
+        where: {
+          organizationId: org.orgId,
+          entityType: { in: ['Client', 'Site'] },
+        },
+      });
+      expect(operationalRemaining).toBe(0);
+
+      // Verify that statutory financial records (Invoices, Payments) remain preserved
+      const statutoryRemaining = await prisma.auditLog.count({
+        where: {
+          organizationId: org.orgId,
+          entityType: { in: ['Invoice', 'Payment'] },
+        },
+      });
+      expect(statutoryRemaining).toBeGreaterThanOrEqual(1);
+
+      // CRITICAL: Verify that the clear operation did NOT insert a new audit log
+      // (preventing the infinite clutter cycle where clearing logs creates new logs)
+      const clearAuditLogs = await prisma.auditLog.findMany({
+        where: {
+          organizationId: org.orgId,
+          action: AuditAction.DELETE,
+          entityId: 'CLEAR_AUDIT_LOG',
+        },
+      });
+      expect(clearAuditLogs.length).toBe(0);
+    });
+
+    it('handles already empty or subsequent clear gracefully', async () => {
+      // Create a disposable organization with NO logs
+      const emptyOrg = await createTestOrg();
+      await prisma.auditLog.deleteMany({ where: { organizationId: emptyOrg.orgId } });
+
+      const res = await request
+        .post('/api/audit-logs/clear')
+        .send({ confirmed: true })
+        .set(authHeader(emptyOrg.accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.purgedCount).toBe(0);
+      expect(res.body.data.totalBefore).toBe(0);
+    });
+  });
 });

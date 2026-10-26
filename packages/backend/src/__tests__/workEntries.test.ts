@@ -105,6 +105,236 @@ describe('Work Entries — Business Rules', () => {
 
       expect(res.status).toBe(422);
     });
+
+    it('allows editing a DRAFT work entry and recalculates totalAmount', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId, { quantity: 10, unitPrice: 50 });
+
+      const res = await request
+        .put(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken))
+        .send({
+          itemNameAr: 'بند معدل',
+          unit: 'م²',
+          quantity: 25,
+          unitPrice: 60,
+          workDate: '2024-02-01',
+          descriptionAr: 'وصف جديد ومعدل',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.itemNameAr).toBe('بند معدل');
+      expect(Number(res.body.data.quantity)).toBe(25);
+      expect(Number(res.body.data.unitPrice)).toBe(60);
+      expect(Number(res.body.data.totalAmount)).toBe(1500); // 25 * 60
+
+      // Verify DB record
+      const dbEntry = await prisma.workEntry.findUnique({ where: { id: entry.id } });
+      expect(Number(dbEntry?.totalAmount)).toBe(1500);
+      expect(dbEntry?.itemDescAr).toBe('وصف جديد ومعدل');
+
+      // Verify AuditLog
+      const auditLog = await prisma.auditLog.findFirst({
+        where: {
+          organizationId: org.orgId,
+          entityId: entry.id,
+          action: 'UPDATE',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(auditLog).toBeTruthy();
+      expect(auditLog?.metadata).toHaveProperty('previousQuantity', '10');
+      expect(auditLog?.metadata).toHaveProperty('newQuantity', '25');
+    });
+
+    it('allows editing a REJECTED work entry', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+      await request.post(`/api/work-entries/${entry.id}/submit`).set(authHeader(org.accessToken));
+      await request.post(`/api/work-entries/${entry.id}/reject`).set(authHeader(org.accessToken)).send({ rejectionReason: 'مرفوض للتعديل' });
+
+      const res = await request
+        .put(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken))
+        .send({
+          itemNameAr: 'بند بعد التعديل',
+          unit: 'م²',
+          quantity: 12,
+          unitPrice: 80,
+          workDate: '2024-02-02',
+        });
+
+      expect(res.status).toBe(200);
+      expect(Number(res.body.data.totalAmount)).toBe(960);
+    });
+
+    it('rejects invalid edit payloads with negative quantity or unit price', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+
+      const res = await request
+        .put(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken))
+        .send({
+          quantity: -5,
+          unitPrice: 100,
+        });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('Deleting work entries', () => {
+    it('deletes an eligible DRAFT work entry and records an audit log', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+
+      const res = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Verify deletion from DB
+      const dbEntry = await prisma.workEntry.findUnique({ where: { id: entry.id } });
+      expect(dbEntry).toBeNull();
+
+      // Verify AuditLog
+      const auditLog = await prisma.auditLog.findFirst({
+        where: {
+          organizationId: org.orgId,
+          entityId: entry.id,
+          action: 'DELETE',
+        },
+      });
+      expect(auditLog).toBeTruthy();
+    });
+
+    it('deletes a REJECTED work entry', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+      await request.post(`/api/work-entries/${entry.id}/submit`).set(authHeader(org.accessToken));
+      await request.post(`/api/work-entries/${entry.id}/reject`).set(authHeader(org.accessToken)).send({ rejectionReason: 'مرفوض' });
+
+      const res = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      const dbEntry = await prisma.workEntry.findUnique({ where: { id: entry.id } });
+      expect(dbEntry).toBeNull();
+    });
+
+    it('blocks deletion of a work entry with billedQuantity > 0', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+      await prisma.workEntry.update({
+        where: { id: entry.id },
+        data: { billedQuantity: 5, status: 'PARTIALLY_BILLED' },
+      });
+
+      const res = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(422);
+      const errMsg = res.body.error?.message || res.body.error || '';
+      expect(errMsg).toContain('5');
+    });
+
+    it('blocks deletion of a work entry linked to an active Statement', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId, { approved: true });
+
+      // Create an active statement linked to this entry
+      const statement = await prisma.statement.create({
+        data: {
+          organizationId: org.orgId,
+          clientId,
+          referenceNo: 'STM-TEST-0001',
+          issueDate: new Date(),
+          orgSnapshot: {},
+          subtotal: 1000,
+          taxableAmount: 1000,
+          vatRate: 15,
+          vatAmount: 150,
+          totalAmount: 1150,
+          status: 'APPROVED',
+          createdById: org.userId,
+          lines: {
+            create: {
+              itemNameAr: entry.itemNameAr,
+              unit: entry.unit,
+              approvedQuantity: 10,
+              unitPrice: 100,
+              lineTotal: 1000,
+              workEntryId: entry.id,
+            },
+          },
+        },
+      });
+
+      const res = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(422);
+      const errMsg = res.body.error?.message || res.body.error || '';
+      expect(errMsg).toContain(statement.referenceNo);
+      expect(errMsg).toContain('APPROVED');
+    });
+
+    it('allows deletion of a work entry if linked statement is CANCELLED', async () => {
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+
+      // Create a CANCELLED statement linked to this entry
+      await prisma.statement.create({
+        data: {
+          organizationId: org.orgId,
+          clientId,
+          referenceNo: 'STM-CANCELLED-0001',
+          issueDate: new Date(),
+          orgSnapshot: {},
+          subtotal: 1000,
+          taxableAmount: 1000,
+          vatRate: 15,
+          vatAmount: 150,
+          totalAmount: 1150,
+          status: 'CANCELLED',
+          createdById: org.userId,
+          lines: {
+            create: {
+              itemNameAr: entry.itemNameAr,
+              unit: entry.unit,
+              approvedQuantity: 10,
+              unitPrice: 100,
+              lineTotal: 1000,
+              workEntryId: entry.id,
+            },
+          },
+        },
+      });
+
+      const res = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      const dbEntry = await prisma.workEntry.findUnique({ where: { id: entry.id } });
+      expect(dbEntry).toBeNull();
+    });
+
+    it('enforces multi-tenant isolation on edit and delete', async () => {
+      const otherOrg = await createTestOrg('other-tenant');
+      const entry = await createTestWorkEntry(org.orgId, clientId, siteId, org.userId);
+
+      // Other org tries to edit
+      const editRes = await request
+        .put(`/api/work-entries/${entry.id}`)
+        .set(authHeader(otherOrg.accessToken))
+        .send({ itemNameAr: 'محاولة اختراق' });
+      expect([403, 404]).toContain(editRes.status);
+
+      // Other org tries to delete
+      const deleteRes = await request
+        .delete(`/api/work-entries/${entry.id}`)
+        .set(authHeader(otherOrg.accessToken));
+      expect([403, 404]).toContain(deleteRes.status);
+    });
   });
 
   describe('Template price isolation', () => {

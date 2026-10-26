@@ -15,8 +15,11 @@ import {
   AlertCircle,
   Trash2,
   PackagePlus,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
 
 interface LineItemDraft {
   workItemTemplateId: string
@@ -60,6 +63,7 @@ export function WorkEntriesPage() {
   // Modals
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [editingEntry, setEditingEntry] = useState<any | null>(null)
+  const [deletingEntry, setDeletingEntry] = useState<any | null>(null)
   const [rejectingEntry, setRejectingEntry] = useState<any | null>(null)
   const [rejectionReason, setRejectionReason] = useState('')
   const [inlineItemModalRowIndex, setInlineItemModalRowIndex] = useState<number | null>(null)
@@ -214,6 +218,28 @@ export function WorkEntriesPage() {
         message:
           err?.response?.data?.error?.message ||
           (isAr ? 'تعذر تحديث العمل' : 'Failed to update work entry'),
+      })
+    },
+  })
+
+  const deleteEntryMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/work-entries/${id}`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workEntries'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      setFeedback({
+        type: 'success',
+        message: isAr ? 'تم حذف مسودة العمل المنفذ بنجاح' : 'Draft work entry deleted successfully',
+      })
+    },
+    onError: (err: any) => {
+      setFeedback({
+        type: 'error',
+        message:
+          err?.response?.data?.error?.message ||
+          (isAr ? 'تعذر حذف مسودة العمل' : 'Failed to delete work entry draft'),
       })
     },
   })
@@ -715,7 +741,7 @@ export function WorkEntriesPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm text-start">
+              <table className="w-full min-w-[760px] print:min-w-0 text-sm text-start">
                 <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                   <tr>
                     <th className="px-4 py-3 text-start font-semibold">
@@ -786,42 +812,56 @@ export function WorkEntriesPage() {
                         })}
                       </td>
                       <td className="px-4 py-3 font-bold text-gray-900">
-                        {Number(entry.totalAmount).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}{' '}
-                        <span className="text-xs font-normal text-gray-500">SAR</span>
+                        {formatCurrency(entry.totalAmount, isAr ? 'ar' : 'en', entry.currency || 'SAR')}
                       </td>
                       <td className="px-4 py-3">{statusBadge(entry.status)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
+                          {/* 1. View Details */}
                           <button
                             type="button"
                             onClick={() => navigate(`/work-entries/${entry.id}`)}
                             title={isAr ? 'عرض التفاصيل' : 'View details'}
-                            className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                            className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
 
+                          {/* 2. Edit Action */}
+                          {entry.status === 'DRAFT' ||
+                          entry.status === 'REJECTED' ||
+                          entry.status === 'PENDING_APPROVAL' ? (
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(entry)}
+                              title={isAr ? 'تعديل بند العمل' : 'Edit Work Entry'}
+                              className="p-1.5 text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <span
+                              className="p-1.5 text-gray-300 cursor-not-allowed"
+                              title={
+                                isAr
+                                  ? 'سجل معتمد ومحمي من التعديل المباشر'
+                                  : 'Approved entry locked from direct modification'
+                              }
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+
+                          {/* 3. Workflow Actions */}
                           {(entry.status === 'DRAFT' || entry.status === 'REJECTED') && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => openEditModal(entry)}
-                                title={isAr ? 'تعديل' : 'Edit'}
-                                className="p-1.5 text-gray-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg"
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => submitMutation.mutate(entry.id)}
-                                title={isAr ? 'إرسال للاعتماد' : 'Submit for approval'}
-                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg"
-                              >
-                                <Send className="w-4 h-4" />
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => submitMutation.mutate(entry.id)}
+                              title={isAr ? 'إرسال للاعتماد' : 'Submit for approval'}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            >
+                              <Send className="w-4 h-4" />
+                            </button>
                           )}
 
                           {entry.status === 'PENDING_APPROVAL' && (
@@ -830,7 +870,7 @@ export function WorkEntriesPage() {
                                 type="button"
                                 onClick={() => approveMutation.mutate(entry.id)}
                                 title={isAr ? 'اعتماد العمل' : 'Approve'}
-                                className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                                className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
                               >
                                 <CheckCircle2 className="w-4 h-4" />
                               </button>
@@ -841,12 +881,22 @@ export function WorkEntriesPage() {
                                   setRejectionReason('')
                                 }}
                                 title={isAr ? 'رفض العمل' : 'Reject'}
-                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg"
+                                className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                               >
                                 <XCircle className="w-4 h-4" />
                               </button>
                             </>
                           )}
+
+                          {/* 4. Delete Action */}
+                          <button
+                            type="button"
+                            onClick={() => setDeletingEntry(entry)}
+                            title={isAr ? 'حذف بند العمل' : 'Delete Work Entry'}
+                            className="p-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1091,7 +1141,9 @@ export function WorkEntriesPage() {
 
                       <div>
                         <label className="block text-xs text-gray-600 mb-1">
-                          {isAr ? 'سعر الوحدة (SAR) *' : 'Unit Price (SAR) *'}
+                          {isAr
+                            ? `سعر الوحدة (${getCurrencySymbol('SAR', true)}) *`
+                            : `Unit Price (${getCurrencySymbol('SAR', false)}) *`}
                         </label>
                         <input
                           type="number"
@@ -1109,11 +1161,7 @@ export function WorkEntriesPage() {
                           {isAr ? 'إجمالي السطر' : 'Line Total'}
                         </label>
                         <div className="px-3 py-2 rounded-lg bg-gray-100 border border-gray-200 text-sm font-bold text-gray-900">
-                          {calculateLineTotal(line.quantity, line.unitPrice).toLocaleString(
-                            'en-US',
-                            { minimumFractionDigits: 2 }
-                          )}{' '}
-                          SAR
+                          {formatCurrency(calculateLineTotal(line.quantity, line.unitPrice), isAr ? 'ar' : 'en')}
                         </div>
                       </div>
 
@@ -1158,7 +1206,7 @@ export function WorkEntriesPage() {
                     {isAr ? 'الإجمالي الكلي للأعمال المضافة' : 'Grand Total'}
                   </span>
                   <span className="text-lg font-bold text-blue-700">
-                    {batchGrandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                    {formatCurrency(batchGrandTotal, isAr ? 'ar' : 'en')}
                   </span>
                 </div>
               </div>
@@ -1317,17 +1365,30 @@ export function WorkEntriesPage() {
             </div>
 
             <form onSubmit={handleEditSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {isAr ? 'اسم البند (عربي) *' : 'Item Name (Arabic) *'}
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editForm.itemNameAr}
-                  onChange={(e) => setEditForm({ ...editForm, itemNameAr: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {isAr ? 'اسم البند (عربي) *' : 'Item Name (Arabic) *'}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editForm.itemNameAr}
+                    onChange={(e) => setEditForm({ ...editForm, itemNameAr: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {isAr ? 'اسم البند (إنجليزي)' : 'Item Name (English)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={editForm.itemNameEn}
+                    onChange={(e) => setEditForm({ ...editForm, itemNameEn: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
@@ -1338,10 +1399,18 @@ export function WorkEntriesPage() {
                   <input
                     type="text"
                     required
+                    list="units-list-edit"
                     value={editForm.unit}
                     onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-1 focus:ring-blue-500"
                   />
+                  <datalist id="units-list-edit">
+                    {units.map((u: any) => (
+                      <option key={u.id || u.code} value={u.nameAr || u.code}>
+                        {u.nameAr} ({u.code})
+                      </option>
+                    ))}
+                  </datalist>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1354,7 +1423,7 @@ export function WorkEntriesPage() {
                     required
                     value={editForm.quantity}
                     onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm font-mono focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
                 <div>
@@ -1368,9 +1437,19 @@ export function WorkEntriesPage() {
                     required
                     value={editForm.unitPrice}
                     onChange={(e) => setEditForm({ ...editForm, unitPrice: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm font-mono focus:ring-1 focus:ring-blue-500"
                   />
                 </div>
+              </div>
+
+              {/* Dynamic Live Total Estimation Box */}
+              <div className="p-2.5 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-between text-xs">
+                <span className="text-gray-600 font-medium">
+                  {isAr ? 'الإجمالي بعد التعديل:' : 'Estimated Total:'}
+                </span>
+                <span className="font-mono font-bold text-gray-900 text-sm">
+                  {formatCurrency((Number(editForm.quantity) || 0) * (Number(editForm.unitPrice) || 0), isAr ? 'ar' : 'en')}
+                </span>
               </div>
 
               <div>
@@ -1382,37 +1461,40 @@ export function WorkEntriesPage() {
                   required
                   value={editForm.workDate}
                   onChange={(e) => setEditForm({ ...editForm, workDate: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {isAr ? 'الوصف / الملاحظات' : 'Description'}
+                  {isAr ? 'الوصف / تفاصيل الأعمال' : 'Description'}
                 </label>
                 <textarea
                   rows={2}
                   value={editForm.descriptionAr}
                   onChange={(e) => setEditForm({ ...editForm, descriptionAr: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  placeholder={isAr ? 'وصف تفصيلي للأعمال المنفذة...' : 'Detailed description...'}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm focus:ring-1 focus:ring-blue-500"
                 />
               </div>
 
-              <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
-                <input
-                  type="checkbox"
-                  checked={editForm.resubmit}
-                  onChange={(e) => setEditForm({ ...editForm, resubmit: e.target.checked })}
-                  className="w-4 h-4 rounded text-blue-600"
-                />
-                <span>
-                  {isAr
-                    ? 'إعادة إرسال العمل للاعتماد فور الحفظ'
-                    : 'Resubmit for approval immediately'}
-                </span>
-              </label>
+              {editingEntry.status === 'REJECTED' && (
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-800 p-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+                  <input
+                    type="checkbox"
+                    checked={editForm.resubmit}
+                    onChange={(e) => setEditForm({ ...editForm, resubmit: e.target.checked })}
+                    className="w-4 h-4 rounded text-blue-600"
+                  />
+                  <span>
+                    {isAr
+                      ? 'إعادة إرسال العمل للاعتماد فور الحفظ'
+                      : 'Resubmit for approval immediately'}
+                  </span>
+                </label>
+              )}
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
                 <button
                   type="button"
                   onClick={() => setEditingEntry(null)}
@@ -1423,12 +1505,109 @@ export function WorkEntriesPage() {
                 <button
                   type="submit"
                   disabled={updateEntryMutation.isPending}
-                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {isAr ? 'حفظ التعديلات' : 'Save Changes'}
+                  {updateEntryMutation.isPending
+                    ? isAr
+                      ? 'جاري الحفظ...'
+                      : 'Saving...'
+                    : isAr
+                    ? 'حفظ التعديلات'
+                    : 'Save Changes'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Work Entry Confirmation Modal */}
+      {deletingEntry && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-gray-100">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  {isAr ? 'تأكيد حذف بند العمل المنفذ' : 'Confirm Work Entry Deletion'}
+                </h3>
+                <span className="text-xs font-mono text-gray-500">{deletingEntry.referenceNo}</span>
+              </div>
+            </div>
+
+            {/* Summary Card */}
+            <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-gray-500">{isAr ? 'البند:' : 'Item:'}</span>
+                <span className="font-bold text-gray-900">{deletingEntry.itemNameAr}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">{isAr ? 'العميل / الموقع:' : 'Client / Site:'}</span>
+                <span className="text-gray-800">
+                  {deletingEntry.client?.nameAr || '-'} / {deletingEntry.site?.nameAr || '-'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">{isAr ? 'الكمية × السعر:' : 'Qty × Price:'}</span>
+                <span className="font-mono text-gray-900">
+                  {Number(deletingEntry.quantity).toLocaleString()} {deletingEntry.unit} ×{' '}
+                  {formatCurrency(deletingEntry.unitPrice, isAr ? 'ar' : 'en', deletingEntry.currency || 'SAR')}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-gray-200 pt-1 font-semibold">
+                <span className="text-gray-700">{isAr ? 'الإجمالي:' : 'Total:'}</span>
+                <span className="text-gray-900 font-mono">
+                  {formatCurrency(deletingEntry.totalAmount, isAr ? 'ar' : 'en', deletingEntry.currency || 'SAR')}
+                </span>
+              </div>
+            </div>
+
+            {Number(deletingEntry.billedQuantity) > 0 ? (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 leading-relaxed flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+                <span>
+                  {isAr
+                    ? `تنبيه: هذا البند يحتوي على كميات مفوترة مسجلة (${Number(deletingEntry.billedQuantity).toLocaleString()} ${deletingEntry.unit}). سيتم فحص الارتباطات المالية وسيتم رفض الحذف في حال وجود فواتير أو مستخلصات نشطة.`
+                    : `Notice: This work entry has billed quantities (${Number(deletingEntry.billedQuantity).toLocaleString()} ${deletingEntry.unit}). Deletion will be rejected if active financial documents exist.`}
+                </span>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-600 leading-relaxed">
+                {isAr
+                  ? `هل أنت متأكد من رغبتك في حذف هذا البند نهائياً؟ سيتم توثيق العملية في سجل التدقيق ولا يمكن التراجع عنها.`
+                  : `Are you sure you want to permanently delete this work entry? This action will be documented in the audit log and cannot be undone.`}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setDeletingEntry(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={deleteEntryMutation.isPending}
+                onClick={() => {
+                  deleteEntryMutation.mutate(deletingEntry.id, {
+                    onSettled: () => setDeletingEntry(null),
+                  })
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteEntryMutation.isPending
+                  ? isAr
+                    ? 'جارٍ الحذف...'
+                    : 'Deleting...'
+                  : isAr
+                  ? 'تأكيد الحذف'
+                  : 'Confirm Delete'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -233,4 +233,86 @@ describe('Audit Log Retention Safeguards & Zero-Deletion Noise Prevention', () =
       expect(countAfter).toBe(countBefore);
     });
   });
+
+  describe('5. Development / Test Cleanup Operation Safeguards', () => {
+    it('rejects test cleanup if confirmation token is missing or invalid', async () => {
+      const res = await request
+        .post('/api/audit-logs/cleanup/dev-test')
+        .send({ confirmationToken: 'INVALID_TOKEN' })
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('CONFIRM_CLEAR_DEV_LOGS');
+    });
+
+    it('rejects test cleanup in production mode', async () => {
+      const originalEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+
+      try {
+        const res = await request
+          .post('/api/audit-logs/cleanup/dev-test')
+          .send({ confirmationToken: 'CONFIRM_CLEAR_DEV_LOGS' })
+          .set(authHeader(org.accessToken));
+
+        expect(res.status).toBe(403);
+        expect(res.body.error.message).toContain('production');
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    it('purges only non-statutory test records, strictly preserving all statutory financial records', async () => {
+      // Seed a couple of new test login logs and user manage logs
+      await prisma.auditLog.createMany({
+        data: [
+          {
+            organizationId: org.orgId,
+            userId: org.userId,
+            action: AuditAction.LOGIN,
+            entityType: 'User',
+            entityId: org.userId,
+            description: 'Test login event',
+          },
+          {
+            organizationId: org.orgId,
+            userId: org.userId,
+            action: AuditAction.USER_MANAGE,
+            entityType: 'User',
+            entityId: org.userId,
+            description: 'Test user manage event',
+          },
+        ],
+      });
+
+      const res = await request
+        .post('/api/audit-logs/cleanup/dev-test')
+        .send({
+          confirmationToken: 'CONFIRM_CLEAR_DEV_LOGS',
+          recordSecurityLog: false,
+        })
+        .set(authHeader(org.accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.purgedCount).toBeGreaterThanOrEqual(2);
+      expect(res.body.data.preservedCount).toBeGreaterThanOrEqual(3); // Invoices, Payments, Statements preserved
+      expect(res.body.data.preservedBreakdown).toBeDefined();
+
+      // Verify that statutory financial records remain completely intact
+      const preservedInvoices = await prisma.auditLog.count({
+        where: { organizationId: org.orgId, entityType: 'Invoice' },
+      });
+      const preservedPayments = await prisma.auditLog.count({
+        where: { organizationId: org.orgId, entityType: 'Payment' },
+      });
+      const preservedStatements = await prisma.auditLog.count({
+        where: { organizationId: org.orgId, entityType: 'Statement' },
+      });
+
+      expect(preservedInvoices).toBeGreaterThanOrEqual(1);
+      expect(preservedPayments).toBeGreaterThanOrEqual(1);
+      expect(preservedStatements).toBeGreaterThanOrEqual(1);
+    });
+  });
 });

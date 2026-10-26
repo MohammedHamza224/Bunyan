@@ -110,6 +110,20 @@ describe('Professional Bilingual Tax Invoice (BUNYAN)', () => {
     expect(html).toContain('lang="ar"')
   })
 
+  it('centers CONSTRUCTION & CONTRACTING and KINGDOM OF SAUDI ARABIA horizontally beneath corporate emblem with robust non-wrapping print alignment', () => {
+    const html = renderToStaticMarkup(
+      <ProfessionalTaxInvoice
+        invoice={mockInvoice}
+        qrImageSrc={sampleQrDataUrl}
+      />
+    )
+    expect(html).toContain('CONSTRUCTION &amp; CONTRACTING')
+    expect(html).toContain('KINGDOM OF SAUDI ARABIA')
+    expect(html).toContain('text-center')
+    expect(html).toContain('items-center')
+    expect(html).toContain('whitespace-nowrap')
+  })
+
   it('strictly aligns Commercial Registration (C.R. No) and VAT Registration numbers in balanced 2-column key-value grids without line-wrapping or bidi-inversion', () => {
     const html = renderToStaticMarkup(
       <ProfessionalTaxInvoice

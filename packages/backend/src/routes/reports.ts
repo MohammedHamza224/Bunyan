@@ -83,6 +83,7 @@ router.get('/customer-statement', async (req, res: Response) => {
     clientId: req.query.clientId as string | undefined,
     dateFrom: req.query.dateFrom as string | undefined,
     dateTo: req.query.dateTo as string | undefined,
+    period: req.query.period as string | undefined,
     currency: req.query.currency as string | undefined,
     transactionType: req.query.transactionType as string | undefined,
   });
@@ -187,6 +188,7 @@ router.get('/export/excel', async (req, res: Response) => {
       clientId: req.query.clientId as string | undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
+      period: req.query.period as string | undefined,
       currency: req.query.currency as string | undefined,
       transactionType: req.query.transactionType as string | undefined,
     });
@@ -194,6 +196,7 @@ router.get('/export/excel', async (req, res: Response) => {
     sheet.columns = [
       { header: isAr ? 'التاريخ' : 'Date', key: 'date', width: 14 },
       { header: isAr ? 'رقم المستند' : 'Document No', key: 'documentNo', width: 18 },
+      { header: isAr ? 'المرجع المقترن' : 'Related Ref', key: 'relatedRef', width: 18 },
       { header: isAr ? 'نوع الحركة' : 'Type', key: 'transactionType', width: 16 },
       { header: isAr ? 'البيان' : 'Description', key: 'description', width: 38 },
       { header: isAr ? 'العملة' : 'Currency', key: 'currency', width: 10 },
@@ -205,11 +208,12 @@ router.get('/export/excel', async (req, res: Response) => {
     if (stmt.openingBalanceAvailable) {
       const openRow = sheet.addRow({
         documentNo: 'OPENING',
+        relatedRef: '-',
         description: isAr ? 'الرصيد الافتتاحي' : 'Opening Balance',
-        currency: stmt.filters.currency,
+        currency: stmt.filters?.currency || stmt.currency || 'SAR',
         debit: 0,
         credit: 0,
-        runningBalance: Number(stmt.openingBalance),
+        runningBalance: Number(stmt.openingBalance || 0),
       });
       openRow.font = { bold: true };
       openRow.getCell('runningBalance').numFmt = numFmt;
@@ -219,31 +223,37 @@ router.get('/export/excel', async (req, res: Response) => {
       const added = sheet.addRow({
         date: new Date(tx.date),
         documentNo: tx.documentNo,
+        relatedRef: tx.relatedRef || '-',
         transactionType: tx.transactionType,
         description: isAr ? tx.descriptionAr : tx.descriptionEn,
         currency: tx.currency,
         debit: Number(tx.debit),
         credit: Number(tx.credit),
-        runningBalance: Number(tx.runningBalance),
+        runningBalance: tx.runningBalance !== null ? Number(tx.runningBalance) : '',
       });
       added.getCell('date').numFmt = dateFmt;
       added.getCell('debit').numFmt = numFmt;
       added.getCell('credit').numFmt = numFmt;
-      added.getCell('runningBalance').numFmt = numFmt;
+      if (tx.runningBalance !== null) {
+        added.getCell('runningBalance').numFmt = numFmt;
+      }
     }
 
     const closeRow = sheet.addRow({
       documentNo: 'CLOSING',
+      relatedRef: '-',
       description: isAr ? 'الإجمالي والرصيد الختامي' : 'Totals & Closing Balance',
-      currency: stmt.filters.currency,
-      debit: Number(stmt.totalDebits),
-      credit: Number(stmt.totalCredits),
-      runningBalance: Number(stmt.closingBalance),
+      currency: stmt.filters?.currency || stmt.currency || 'SAR',
+      debit: Number(stmt.totalDebits || 0),
+      credit: Number(stmt.totalCredits || 0),
+      runningBalance: stmt.closingBalance !== null ? Number(stmt.closingBalance) : (isAr ? 'غير متاح' : 'N/A'),
     });
     closeRow.font = { bold: true };
     closeRow.getCell('debit').numFmt = numFmt;
     closeRow.getCell('credit').numFmt = numFmt;
-    closeRow.getCell('runningBalance').numFmt = numFmt;
+    if (stmt.closingBalance !== null) {
+      closeRow.getCell('runningBalance').numFmt = numFmt;
+    }
   } else if (reportType === 'aging') {
     const aging = await getAgingReport(organizationId, req.query);
     sheet.columns = [

@@ -13,14 +13,27 @@ import {
   AlertCircle,
   QrCode,
   Trash2,
+  Edit2,
+  Printer,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
+import { useAuth } from '../../hooks/useAuth'
 
 export function InvoicesPage() {
-  const { i18n } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { user, hasPermission } = useAuth()
   const isAr = i18n.language === 'ar'
+
+  const isAdmin =
+    user?.role === 'SUPER_ADMIN' ||
+    user?.role === 'ORG_ADMIN' ||
+    (user?.permissions && user.permissions.includes('MANAGE_SETTINGS')) ||
+    (typeof hasPermission === 'function' && hasPermission('MANAGE_SETTINGS'))
 
   const [search, setSearch] = useState('')
   const [clientFilter, setClientFilter] = useState('')
@@ -32,6 +45,15 @@ export function InvoicesPage() {
   const [createMode, setCreateMode] = useState<'fromStatement' | 'direct'>('fromStatement')
   const [cancellingInvoice, setCancellingInvoice] = useState<any | null>(null)
   const [cancellationReason, setCancellationReason] = useState('')
+  const [editingInvoice, setEditingInvoice] = useState<any | null>(null)
+  const [editForm, setEditForm] = useState({
+    dueDate: '',
+    supplyDate: '',
+    discountAmount: '0',
+    notes: '',
+  })
+  const [deletingInvoice, setDeletingInvoice] = useState<any | null>(null)
+  const [confirmTestCleanup, setConfirmTestCleanup] = useState(false)
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
   )
@@ -161,15 +183,21 @@ export function InvoicesPage() {
   })
 
   const deleteDraftMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await api.delete(`/invoices/${id}`)
+    mutationFn: async (payload: { id: string; testCleanup?: boolean } | string) => {
+      const id = typeof payload === 'string' ? payload : payload.id
+      const isTest = typeof payload === 'object' ? payload.testCleanup : false
+      await api.delete(`/invoices/${id}${isTest ? '?testCleanup=true' : ''}`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] })
+      queryClient.invalidateQueries({ queryKey: ['clients'] })
+      queryClient.invalidateQueries({ queryKey: ['statements'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      setDeletingInvoice(null)
+      setConfirmTestCleanup(false)
       setFeedback({
         type: 'success',
-        message: isAr ? 'تم حذف مسودة الفاتورة بنجاح' : 'Draft invoice deleted successfully',
+        message: isAr ? 'تم حذف الفاتورة بنجاح' : 'Invoice deleted successfully',
       })
     },
     onError: (err: any) => {
@@ -177,10 +205,44 @@ export function InvoicesPage() {
         type: 'error',
         message:
           err?.response?.data?.error?.message ||
-          (isAr ? 'تعذر حذف مسودة الفاتورة' : 'Failed to delete draft invoice'),
+          (isAr ? 'تعذر حذف الفاتورة' : 'Failed to delete invoice'),
       })
     },
   })
+
+  const updateInvoiceMutation = useMutation({
+    mutationFn: async ({ id, body }: { id: string; body: any }) => {
+      const res = await api.put(`/invoices/${id}`, body)
+      return res.data?.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      setEditingInvoice(null)
+      setFeedback({
+        type: 'success',
+        message: isAr ? 'تم حفظ تعديلات مسودة الفاتورة بنجاح' : 'Draft invoice updated successfully',
+      })
+    },
+    onError: (err: any) => {
+      setFeedback({
+        type: 'error',
+        message:
+          err?.response?.data?.error?.message ||
+          (isAr ? 'تعذر تعديل مسودة الفاتورة' : 'Failed to update draft invoice'),
+      })
+    },
+  })
+
+  const handleOpenEdit = (inv: any) => {
+    setEditingInvoice(inv)
+    setEditForm({
+      dueDate: inv.dueDate ? inv.dueDate.slice(0, 10) : '',
+      supplyDate: inv.supplyDate ? inv.supplyDate.slice(0, 10) : '',
+      discountAmount: String(inv.discountAmount || '0'),
+      notes: inv.notes || '',
+    })
+  }
 
   const cancelMutation = useMutation({
     mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
@@ -328,12 +390,15 @@ export function InvoicesPage() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-gray-900">
-              {isAr ? 'الفواتير الضريبية ومتطلبات ZATCA' : 'Tax Invoices & ZATCA E-Invoicing'}
+              {t('invoices.heading', isAr ? 'الفواتير وإدارة الفوترة' : 'Invoices & Billing Management')}
             </h1>
             <p className="text-sm text-gray-500">
-              {isAr
-                ? 'إصدار الفواتير من المستخلصات المعتمدة أو مباشرة من الأعمال مع منع تكرار الفوترة ودعم ZATCA'
-                : 'Issue invoices from statements or directly from approved works with ZATCA compliance'}
+              {t(
+                'invoices.description',
+                isAr
+                  ? 'إصدار الفواتير من المستخلصات المعتمدة أو الأعمال المنفذة، مع منع تكرار الفوترة ودعم متطلبات الفوترة الإلكترونية.'
+                  : 'Issue invoices from approved work-completion statements or completed work, prevent duplicate billing, and support electronic invoicing requirements.'
+              )}
             </p>
           </div>
         </div>
@@ -459,7 +524,7 @@ export function InvoicesPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm text-start">
+              <table className="w-full min-w-[760px] print:min-w-0 text-sm text-start">
                 <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                   <tr>
                     <th className="px-4 py-3 text-start font-semibold">
@@ -528,23 +593,16 @@ export function InvoicesPage() {
                         {isAr ? inv.client?.nameAr : inv.client?.nameEn || inv.client?.nameAr}
                       </td>
                       <td className="px-4 py-3 font-bold text-gray-900">
-                        {Number(inv.totalAmount).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}{' '}
-                        SAR
+                        {formatCurrency(inv.totalAmount, isAr ? 'ar' : 'en', inv.currency || 'SAR')}
                       </td>
                       <td className="px-4 py-3 text-xs">
                         <div className="text-emerald-700 font-semibold">
                           {isAr ? 'مدفوع: ' : 'Paid: '}
-                          {Number(inv.paidAmount).toLocaleString('en-US', {
-                            minimumFractionDigits: 2,
-                          })}
+                          {formatCurrency(inv.paidAmount, isAr ? 'ar' : 'en', inv.currency || 'SAR')}
                         </div>
                         <div className="text-amber-700 font-semibold">
                           {isAr ? 'متبقي: ' : 'Rem: '}
-                          {Number(inv.remainingAmount).toLocaleString('en-US', {
-                            minimumFractionDigits: 2,
-                          })}
+                          {formatCurrency(inv.remainingAmount, isAr ? 'ar' : 'en', inv.currency || 'SAR')}
                         </div>
                       </td>
                       <td className="px-4 py-3">{statusBadge(inv.status)}</td>
@@ -554,14 +612,31 @@ export function InvoicesPage() {
                           <button
                             type="button"
                             onClick={() => navigate(`/invoices/${inv.id}`)}
-                            title={isAr ? 'عرض الفاتورة ورمز ZATCA' : 'View Invoice & ZATCA'}
+                            title={isAr ? 'عرض تفاصيل الفاتورة' : 'View Invoice'}
                             className="p-1.5 text-gray-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
 
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/invoices/${inv.id}`)}
+                            title={isAr ? 'طباعة الفاتورة الرسمية (PDF)' : 'Print Official Invoice'}
+                            className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg"
+                          >
+                            <Printer className="w-4 h-4" />
+                          </button>
+
                           {inv.status === 'DRAFT' && (
                             <>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEdit(inv)}
+                                title={isAr ? 'تعديل مسودة الفاتورة' : 'Edit Draft Invoice'}
+                                className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-lg"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => approveMutation.mutate(inv.id)}
@@ -572,23 +647,71 @@ export function InvoicesPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (
-                                    window.confirm(
-                                      isAr
-                                        ? `هل أنت متأكد من رغبتك في حذف مسودة الفاتورة ${inv.referenceNo} نهائياً؟`
-                                        : `Are you sure you want to permanently delete draft invoice ${inv.referenceNo}?`
-                                    )
-                                  ) {
-                                    deleteDraftMutation.mutate(inv.id)
-                                  }
-                                }}
+                                onClick={() => setDeletingInvoice(inv)}
                                 title={isAr ? 'حذف مسودة الفاتورة' : 'Delete Draft'}
                                 className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
                             </>
+                          )}
+
+                          {(inv.status === 'APPROVED' || inv.status === 'SENT') && (
+                            <>
+                              {inv.zatcaStatus === 'REPORTED' || inv.zatcaStatus === 'CLEARED' ? (
+                                <span
+                                  title={
+                                    isAr
+                                      ? 'فاتورة ضريبية رسمية محصنة غير قابلة للتعديل أو الحذف وفق اشتراطات هيئة الزكاة والضريبة والجمارك (ZATCA)'
+                                      : 'Statutorily immutable tax invoice under ZATCA regulations'
+                                  }
+                                  className="p-1.5 text-gray-400 cursor-help"
+                                >
+                                  <Lock className="w-4 h-4" />
+                                </span>
+                              ) : isAdmin ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDeletingInvoice(inv)
+                                    setConfirmTestCleanup(false)
+                                  }}
+                                  title={
+                                    isAr
+                                      ? 'حذف سجل اختباري (إشراف)'
+                                      : 'Delete Test Record (Admin Cleanup)'
+                                  }
+                                  className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              ) : (
+                                <span
+                                  title={
+                                    isAr
+                                      ? 'فاتورة معتمدة محصنة (يجب إلغاؤها أولاً للحذف)'
+                                      : 'Approved invoice (must be cancelled first to delete)'
+                                  }
+                                  className="p-1.5 text-gray-400 cursor-help"
+                                >
+                                  <Lock className="w-4 h-4" />
+                                </span>
+                              )}
+                            </>
+                          )}
+
+                          {inv.status === 'CANCELLED' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeletingInvoice(inv)
+                                setConfirmTestCleanup(false)
+                              }}
+                              title={isAr ? 'حذف الفاتورة الملغاة' : 'Delete Cancelled Invoice'}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           )}
 
                           {inv.status !== 'CANCELLED' && Number(inv.paidAmount) === 0 && (
@@ -796,8 +919,8 @@ export function InvoicesPage() {
                         : 'No approved statements found for this client.'}
                     </div>
                   ) : (
-                    <div className="border border-gray-200 rounded-xl overflow-hidden">
-                      <table className="w-full text-xs text-start">
+                    <div className="border border-gray-200 rounded-xl overflow-x-auto">
+                      <table className="w-full min-w-[500px] text-xs text-start">
                         <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                           <tr>
                             <th className="p-2.5 w-10"></th>
@@ -836,7 +959,7 @@ export function InvoicesPage() {
                                   {st.issueDate ? st.issueDate.slice(0, 10) : '-'}
                                 </td>
                                 <td className="p-2.5 text-end font-bold text-gray-900">
-                                  {Number(st.totalAmount).toFixed(2)} SAR
+                                  {formatCurrency(st.totalAmount, isAr ? 'ar' : 'en', st.currency || 'SAR')}
                                 </td>
                               </tr>
                             )
@@ -860,8 +983,8 @@ export function InvoicesPage() {
                         : 'No unbilled approved work entries for this client.'}
                     </div>
                   ) : (
-                    <div className="border border-gray-200 rounded-xl overflow-hidden max-h-60 overflow-y-auto">
-                      <table className="w-full text-xs text-start">
+                    <div className="border border-gray-200 rounded-xl overflow-x-auto max-h-60 overflow-y-auto">
+                      <table className="w-full min-w-[580px] text-xs text-start">
                         <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                           <tr>
                             <th className="p-2.5 w-10"></th>
@@ -928,7 +1051,7 @@ export function InvoicesPage() {
                                   )}
                                 </td>
                                 <td className="p-2.5 text-end font-semibold">
-                                  {Number(we.unitPrice).toFixed(2)} SAR
+                                  {formatCurrency(we.unitPrice, isAr ? 'ar' : 'en', we.currency || 'SAR')}
                                 </td>
                               </tr>
                             )
@@ -1014,6 +1137,311 @@ export function InvoicesPage() {
           </div>
         </div>
       )}
+
+      {/* Edit Draft Invoice Modal */}
+      {editingInvoice && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-lg font-bold text-gray-900">
+                {isAr
+                  ? `تعديل مسودة الفاتورة (${editingInvoice.referenceNo})`
+                  : `Edit Draft Invoice (${editingInvoice.referenceNo})`}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingInvoice(null)}
+                className="p-1 text-gray-400 hover:text-gray-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                const discount = parseFloat(editForm.discountAmount) || 0
+                const subtotal = Number(editingInvoice.subtotalAmount || 0)
+                if (discount > subtotal) {
+                  setFeedback({
+                    type: 'error',
+                    message: isAr
+                      ? 'مبلغ الخصم لا يمكن أن يتجاوز المجموع الفرعي'
+                      : 'Discount cannot exceed subtotal',
+                  })
+                  return
+                }
+                updateInvoiceMutation.mutate({
+                  id: editingInvoice.id,
+                  body: {
+                    dueDate: editForm.dueDate || null,
+                    supplyDate: editForm.supplyDate || null,
+                    discountAmount: discount,
+                    notes: editForm.notes.trim() || null,
+                  },
+                })
+              }}
+              className="space-y-4"
+            >
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">
+                    {isAr ? 'تاريخ التوريد' : 'Supply Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.supplyDate}
+                    onChange={(e) => setEditForm({ ...editForm, supplyDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">
+                    {isAr ? 'تاريخ الاستحقاق' : 'Due Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.dueDate}
+                    onChange={(e) => setEditForm({ ...editForm, dueDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  {isAr
+                    ? `مبلغ الخصم الإضافي (${getCurrencySymbol(editingInvoice?.currency || 'SAR', true)})`
+                    : `Discount Amount (${getCurrencySymbol(editingInvoice?.currency || 'SAR', false)})`}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={editForm.discountAmount}
+                  onChange={(e) => setEditForm({ ...editForm, discountAmount: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm font-mono"
+                />
+              </div>
+
+              {/* Live Financial Summary */}
+              {(() => {
+                const subtotal = Number(editingInvoice.subtotalAmount || 0)
+                const discount = Math.min(subtotal, Math.max(0, parseFloat(editForm.discountAmount) || 0))
+                const taxable = Math.max(0, subtotal - discount)
+                const vat = editingInvoice.isTaxExempt ? 0 : Math.round(taxable * 0.15 * 100) / 100
+                const total = taxable + vat
+                const invCurr = editingInvoice.currency || 'SAR'
+                return (
+                  <div className="bg-blue-50/70 border border-blue-200/60 rounded-xl p-3.5 space-y-1.5 text-xs">
+                    <div className="flex justify-between text-gray-600">
+                      <span>{isAr ? 'المجموع قبل الخصم:' : 'Subtotal:'}</span>
+                      <span className="font-mono">{formatCurrency(subtotal, isAr ? 'ar' : 'en', invCurr)}</span>
+                    </div>
+                    <div className="flex justify-between text-amber-700 font-semibold">
+                      <span>{isAr ? 'الخصم التجاري:' : 'Discount:'}</span>
+                      <span className="font-mono">-{formatCurrency(discount, isAr ? 'ar' : 'en', invCurr)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-700">
+                      <span>{isAr ? 'الوعاء الخاضع للضريبة:' : 'Taxable Amount:'}</span>
+                      <span className="font-mono">{formatCurrency(taxable, isAr ? 'ar' : 'en', invCurr)}</span>
+                    </div>
+                    <div className="flex justify-between text-gray-700">
+                      <span>{isAr ? 'ضريبة القيمة المضافة (15%):' : 'VAT (15%):'}</span>
+                      <span className="font-mono">{formatCurrency(vat, isAr ? 'ar' : 'en', invCurr)}</span>
+                    </div>
+                    <div className="flex justify-between text-blue-900 font-bold border-t border-blue-200 pt-1 text-sm">
+                      <span>{isAr ? 'الإجمالي بعد التعديل:' : 'New Total:'}</span>
+                      <span className="font-mono">{formatCurrency(total, isAr ? 'ar' : 'en', invCurr)}</span>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  {isAr ? 'ملاحظات الفاتورة' : 'Invoice Notes'}
+                </label>
+                <textarea
+                  rows={2}
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  placeholder={isAr ? 'ملاحظات إضافية...' : 'Optional notes...'}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingInvoice(null)}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-sm"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={updateInvoiceMutation.isPending}
+                  className="px-5 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {updateInvoiceMutation.isPending
+                    ? isAr
+                      ? 'جاري الحفظ...'
+                      : 'Saving...'
+                    : isAr
+                    ? 'حفظ التعديلات'
+                    : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Invoice Confirmation Modal (Draft, Cancelled, or Admin Test-Cleanup) */}
+      {deletingInvoice && (() => {
+        const isTestInvoice =
+          deletingInvoice.status === 'APPROVED' ||
+          deletingInvoice.status === 'SENT' ||
+          Number(deletingInvoice.paidAmount) > 0;
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+              <div className="flex items-center gap-3 text-red-600">
+                <div className="p-2 bg-red-100 rounded-full">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    {isTestInvoice
+                      ? isAr
+                        ? 'حذف سجل اختباري وتنظيف البيانات'
+                        : 'Delete Test Invoice (Admin Cleanup)'
+                      : deletingInvoice.status === 'CANCELLED'
+                      ? isAr
+                        ? 'تأكيد حذف الفاتورة الملغاة'
+                        : 'Confirm Cancelled Invoice Deletion'
+                      : isAr
+                      ? 'حذف مسودة الفاتورة'
+                      : 'Delete Draft Invoice'}
+                  </h3>
+                  <span className="text-xs font-mono text-gray-500">{deletingInvoice.referenceNo}</span>
+                </div>
+              </div>
+
+              {isTestInvoice ? (
+                <div className="space-y-3">
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 leading-relaxed space-y-1.5">
+                    <div className="font-bold text-red-900 flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                      <span>{isAr ? 'تنبيه إشرافي خاص ببيانات الاختبار' : 'Administrative Test Data Cleanup Notice'}</span>
+                    </div>
+                    <p>
+                      {isAr
+                        ? `هذه الفاتورة مسجلة بحالة (${deletingInvoice.status}) وبقيمة ${formatCurrency(deletingInvoice.totalAmount, 'ar', deletingInvoice.currency || 'SAR')}. حذفها مخصص لتنظيف السجلات التجريبية، وسيؤدي إلى عكس أية مدفوعات مرتبطة بها وتحديث رصيد العميل بدقة.`
+                        : `This invoice is currently in (${deletingInvoice.status}) status with total ${formatCurrency(deletingInvoice.totalAmount, 'en', deletingInvoice.currency || 'SAR')}. Deletion is for test data cleanup and will reverse associated payments and reconcile client balances.`}
+                    </p>
+                  </div>
+
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-gray-50 border border-gray-200 cursor-pointer text-xs text-gray-800 font-medium hover:bg-gray-100 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={confirmTestCleanup}
+                      onChange={(e) => setConfirmTestCleanup(e.target.checked)}
+                      className="mt-0.5 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                    />
+                    <span>
+                      {isAr
+                        ? 'أؤكد أن هذا سجل اختباري وأرغب في حذفه نهائياً وعكس أي سجلات دفع مرتبطة به وتحديث رصيد العميل.'
+                        : 'I confirm that this is a test record and wish to permanently delete it, reversing linked payments and adjusting client balance.'}
+                    </span>
+                  </label>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  {deletingInvoice.status === 'CANCELLED' ? (
+                    isAr ? (
+                      <>
+                        أنت على وشك حذف الفاتورة الملغاة رقم{' '}
+                        <span className="font-mono font-bold text-gray-900">
+                          {deletingInvoice.referenceNo}
+                        </span>{' '}
+                        بقيمة إجمالية{' '}
+                        <span className="font-semibold text-gray-900">
+                          {formatCurrency(deletingInvoice.totalAmount, 'ar', deletingInvoice.currency || 'SAR')}
+                        </span>{' '}
+                        نهائياً. لا توجد مدفوعات أو إشعارات مرتبطة بها، وسيتم توثيق عملية الحذف في سجل التدقيق.
+                      </>
+                    ) : (
+                      <>
+                        Are you sure you want to permanently delete cancelled invoice{' '}
+                        <span className="font-mono font-bold text-gray-900">
+                          {deletingInvoice.referenceNo}
+                        </span>{' '}
+                        (Total:{' '}
+                        {formatCurrency(deletingInvoice.totalAmount, 'en', deletingInvoice.currency || 'SAR')})? This action will be documented in the audit trail.
+                      </>
+                    )
+                  ) : isAr ? (
+                    <>
+                      هل أنت متأكد من رغبتك في حذف مسودة الفاتورة رقم{' '}
+                      <span className="font-mono font-bold text-gray-900">
+                        {deletingInvoice.referenceNo}
+                      </span>
+                      ؟ سيتم تحرير جميع بنود الأعمال أو المستخلصات الملحقة بها ليمكن فوترتها لاحقاً.
+                    </>
+                  ) : (
+                    <>
+                      Are you sure you want to permanently delete draft invoice{' '}
+                      <span className="font-mono font-bold text-gray-900">
+                        {deletingInvoice.referenceNo}
+                      </span>
+                      ? Linked work entries and statements will be released.
+                    </>
+                  )}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeletingInvoice(null);
+                    setConfirmTestCleanup(false);
+                  }}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-sm"
+                >
+                  {isAr ? 'تراجع' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={deleteDraftMutation.isPending || (isTestInvoice && !confirmTestCleanup)}
+                  onClick={() =>
+                    deleteDraftMutation.mutate({
+                      id: deletingInvoice.id,
+                      testCleanup: isTestInvoice,
+                    })
+                  }
+                  className="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:opacity-50"
+                >
+                  {deleteDraftMutation.isPending
+                    ? isAr
+                      ? 'جاري الحذف...'
+                      : 'Deleting...'
+                    : isAr
+                    ? isTestInvoice
+                      ? 'تأكيد تنظيف السجل'
+                      : 'تأكيد الحذف النهائي'
+                    : isTestInvoice
+                    ? 'Confirm Test Cleanup'
+                    : 'Confirm Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   )
 }

@@ -20,6 +20,7 @@ import {
   Building2,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
 
 type ReportTab =
   | 'invoices'
@@ -137,10 +138,11 @@ export function ReportsPage() {
   })
   const clients: any[] = Array.isArray(clientsData) ? clientsData : []
 
-  // Auto-select first client on Customer Statement tab if none selected
+  // Auto-select first client on Customer Statement tab if none selected (prefer active client)
   useEffect(() => {
     if (activeTab === 'customer-statement' && !clientId && clients.length > 0) {
-      setClientId(clients[0].id)
+      const firstActive = clients.find((c: any) => c.status === 'ACTIVE') || clients[0]
+      setClientId(firstActive.id)
     }
   }, [activeTab, clientId, clients])
 
@@ -225,13 +227,7 @@ export function ReportsPage() {
   const activeCurrency = reportData?.currency || orgSettings?.defaultCurrency || 'SAR'
 
   const formatMoney = (val: number | string | undefined, curr = activeCurrency) => {
-    const num = Number(val ?? 0)
-    return new Intl.NumberFormat(isAr ? 'ar-SA' : 'en-SA', {
-      style: 'currency',
-      currency: curr || 'SAR',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num)
+    return formatCurrency(val, isAr ? 'ar' : 'en', curr)
   }
 
   const handleExportExcel = async () => {
@@ -420,11 +416,15 @@ export function ReportsPage() {
               {activeTab !== 'customer-statement' && (
                 <option value="">{isAr ? 'كل العملاء' : 'All Clients'}</option>
               )}
-              {clients.map((c: any) => (
-                <option key={c.id} value={c.id}>
-                  {isAr ? c.nameAr : c.nameEn || c.nameAr}
-                </option>
-              ))}
+              {clients.map((c: any) => {
+                const isArchived = c.status === 'INACTIVE'
+                return (
+                  <option key={c.id} value={c.id}>
+                    {isAr ? c.nameAr : c.nameEn || c.nameAr}
+                    {isArchived ? (isAr ? ' (مؤرشف / غير نشط)' : ' (Archived / Inactive)') : ''}
+                  </option>
+                )
+              })}
             </select>
           </div>
 
@@ -789,7 +789,7 @@ export function ReportsPage() {
                 {new Date().toLocaleString(isAr ? 'ar-SA' : 'en-US')}
               </p>
               <p className="text-xs text-gray-600 mt-0.5">
-                {isAr ? `العملة: ${activeCurrency}` : `Currency: ${activeCurrency}`}
+                {isAr ? `العملة: ${getCurrencySymbol(activeCurrency, true)} (${activeCurrency})` : `Currency: ${activeCurrency}`}
               </p>
             </div>
           </div>
@@ -887,7 +887,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'رقم الفاتورة' : 'Invoice No'}</th>
@@ -1009,7 +1009,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'رقم المستخلص' : 'Statement No'}</th>
@@ -1104,7 +1104,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'المرجع' : 'Ref No'}</th>
@@ -1200,7 +1200,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'التاريخ' : 'Payment Date'}</th>
@@ -1300,7 +1300,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'رقم الفاتورة' : 'Invoice No'}</th>
@@ -1357,7 +1357,14 @@ export function ReportsPage() {
             {/* Customer Details Box */}
             <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <p className="text-xs text-gray-500">{isAr ? 'كشف حساب العميل:' : 'Customer Statement:'}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-gray-500">{isAr ? 'كشف حساب العميل:' : 'Customer Statement:'}</p>
+                  {reportData.client?.status === 'INACTIVE' && (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                      {isAr ? 'مؤرشف / غير نشط' : 'Archived / Inactive'}
+                    </span>
+                  )}
+                </div>
                 <h3 className="text-base font-bold text-gray-900 mt-0.5">
                   {isAr
                     ? reportData.client?.nameAr
@@ -1397,6 +1404,26 @@ export function ReportsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Archived Customer Banner & Direct Link */}
+            {reportData.client?.status === 'INACTIVE' && (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-900 text-xs print:hidden">
+                <div className="flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    {isAr
+                      ? 'تنبيه: هذا العميل مؤرشف (غير نشط) في سجلات المؤسسة. لا يظهر افتراضياً في قائمة العملاء النشطين.'
+                      : 'Notice: This customer is archived (inactive). They are hidden from the default active customers list.'}
+                  </span>
+                </div>
+                <Link
+                  to={`/clients?status=ALL&search=${encodeURIComponent(reportData.client.nameAr || '')}`}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg font-semibold text-xs transition-colors shrink-0"
+                >
+                  <span>{isAr ? 'عرض العميل في صفحة العملاء' : 'View in Customers Page'}</span>
+                </Link>
+              </div>
+            )}
 
             {/* Statement Summary Cards */}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -1449,18 +1476,23 @@ export function ReportsPage() {
                   {isAr ? 'الرصيد الختامي المستحق' : 'Closing Balance'}
                 </p>
                 <p className="text-sm font-bold text-rose-900 mt-1" data-testid="statement-closing-balance">
-                  {formatMoney(reportData.summary?.closingBalance)}
+                  {reportData.summary?.closingBalance !== null && reportData.summary?.closingBalance !== undefined
+                    ? formatMoney(reportData.summary.closingBalance)
+                    : isAr
+                    ? 'غير متاح (فلتر نوع حركة)'
+                    : 'N/A (Filtered by Type)'}
                 </p>
               </div>
             </div>
 
             {/* Chronological Ledger Table */}
             <div className="overflow-x-auto">
-              <table className="w-full text-xs text-start border-collapse">
+              <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                 <thead className="bg-gray-800 text-white">
                   <tr>
                     <th className="py-2.5 px-3 text-start">{isAr ? 'التاريخ' : 'Date'}</th>
                     <th className="py-2.5 px-3 text-start">{isAr ? 'رقم المستند' : 'Document No'}</th>
+                    <th className="py-2.5 px-3 text-start">{isAr ? 'المرجع المقترن' : 'Related Ref'}</th>
                     <th className="py-2.5 px-3 text-start">{isAr ? 'نوع الحركة' : 'Type'}</th>
                     <th className="py-2.5 px-3 text-start">{isAr ? 'البيان / الوصف' : 'Description'}</th>
                     <th className="py-2.5 px-3 text-end">{isAr ? 'مدين (Debit)' : 'Debit'}</th>
@@ -1482,6 +1514,7 @@ export function ReportsPage() {
                           : '—'}
                       </td>
                       <td className="py-2.5 px-3 font-mono">OPENING</td>
+                      <td className="py-2.5 px-3 text-gray-400">—</td>
                       <td className="py-2.5 px-3">
                         {isAr ? 'رصيد افتتاحي' : 'Opening Balance'}
                       </td>
@@ -1500,7 +1533,7 @@ export function ReportsPage() {
 
                   {reportData.transactions?.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-gray-500">
+                      <td colSpan={8} className="py-8 text-center text-gray-500">
                         {isAr
                           ? 'لا توجد حركات مالية مسجلة خلال هذه الفترة'
                           : 'No financial transactions recorded during this period'}
@@ -1513,6 +1546,15 @@ export function ReportsPage() {
                           {new Date(tx.date).toLocaleDateString(isAr ? 'ar-SA' : 'en-US')}
                         </td>
                         <td className="py-2.5 px-3 font-mono font-semibold">{tx.documentNo}</td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {tx.relatedRef ? (
+                            <span className="inline-block px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[11px] font-medium border border-gray-200">
+                              {tx.relatedRef}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
                         <td className="py-2.5 px-3">{tx.type}</td>
                         <td className="py-2.5 px-3">
                           {isAr ? tx.descriptionAr : tx.descriptionEn}
@@ -1532,7 +1574,7 @@ export function ReportsPage() {
 
                   {/* Closing Balance Row */}
                   <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
-                    <td colSpan={4} className="py-3 px-3 text-start">
+                    <td colSpan={5} className="py-3 px-3 text-start">
                       {isAr ? 'الإجمالي والرصيد الختامي' : 'Totals & Closing Balance'}
                     </td>
                     <td className="py-3 px-3 text-end text-blue-800">
@@ -1542,7 +1584,9 @@ export function ReportsPage() {
                       {formatMoney(reportData.summary?.totalCredits)}
                     </td>
                     <td className="py-3 px-3 text-end text-rose-700">
-                      {formatMoney(reportData.summary?.closingBalance)}
+                      {reportData.summary?.closingBalance !== null && reportData.summary?.closingBalance !== undefined
+                        ? formatMoney(reportData.summary.closingBalance)
+                        : '—'}
                     </td>
                   </tr>
                 </tbody>
@@ -1611,7 +1655,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'الموقع' : 'Site'}</th>
@@ -1761,7 +1805,7 @@ export function ReportsPage() {
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs text-start border-collapse">
+                <table className="w-full min-w-[650px] print:min-w-0 text-xs text-start border-collapse">
                   <thead className="bg-gray-50 border-y border-gray-200 text-gray-600">
                     <tr>
                       <th className="py-2.5 px-3 text-start">{isAr ? 'رقم الفاتورة' : 'Invoice No'}</th>

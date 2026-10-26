@@ -368,7 +368,7 @@ export function SiteDetailPage() {
               {isAr ? 'إجمالي قيمة الأعمال في الموقع' : 'Total Work Value'}
             </p>
             <p className="text-2xl font-bold text-[#0F172A] mt-2">
-              {formatCurrency(Number(site.stats?.totalValue ?? 0), locale)}
+              {formatCurrency(Number(site.stats?.totalValue ?? 0), locale, site.currency || 'SAR')}
             </p>
           </div>
         </div>
@@ -400,7 +400,7 @@ export function SiteDetailPage() {
           <div className="p-12 text-center text-sm text-gray-500">{t('workEntries.noEntries')}</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm text-start">
+            <table className="w-full min-w-[640px] print:min-w-0 text-sm text-start">
               <thead className="bg-[#F8FAFC] border-b border-gray-200 text-xs text-gray-600 font-semibold uppercase">
                 <tr>
                   <th className="px-6 py-3.5 text-start">#</th>
@@ -428,10 +428,10 @@ export function SiteDetailPage() {
                       {Number(we.quantity)} {we.unit}
                     </td>
                     <td className="px-6 py-4 text-gray-700">
-                      {formatCurrency(Number(we.unitPrice), locale)}
+                      {formatCurrency(Number(we.unitPrice), locale, we.currency || site.currency || 'SAR')}
                     </td>
                     <td className="px-6 py-4 font-semibold text-gray-900">
-                      {formatCurrency(Number(we.totalAmount), locale)}
+                      {formatCurrency(Number(we.totalAmount), locale, we.currency || site.currency || 'SAR')}
                     </td>
                     <td className="px-6 py-4 text-xs">
                       <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs">

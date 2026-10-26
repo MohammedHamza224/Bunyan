@@ -131,15 +131,20 @@ export function validateZatcaMandatoryFields(input: {
 /**
  * Encode a single Tag-Length-Value (TLV) field according to ZATCA e-invoicing specification.
  */
-function encodeTlvField(tag: number, value: string): Buffer {
-  const valueBuffer = Buffer.from(value, 'utf8');
+function encodeTlvField(tag: number, value: string | Buffer): Buffer {
+  const valueBuffer = Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
   const tagBuffer = Buffer.from([tag]);
   const lengthBuffer = Buffer.from([valueBuffer.length]);
   return Buffer.concat([tagBuffer, lengthBuffer, valueBuffer]);
 }
 
 /**
- * Generate ZATCA TLV Base64 QR Code (Tags 1..5, plus optional Tag 6 XML hash).
+ * Generate ZATCA TLV Base64 QR Code according to Phase 1 and Phase 2 specifications:
+ * - Tags 1..5: Mandatory for all electronic invoices (Seller, VAT No, Timestamp, Total, VAT Total)
+ * - Tag 6: SHA-256 Hash of XML invoice (Phase 2 mandatory)
+ * - Tag 7: ECDSA Digital Signature (Phase 2 signed invoices)
+ * - Tag 8: ECDSA Public Key (Phase 2 signed invoices)
+ * - Tag 9: Cryptographic Stamp Identifier (CSID) of X.509 certificate (Phase 2 signed invoices)
  * Requires genuine Seller Name and Seller VAT Number — never uses fallback placeholders.
  */
 export function generateZatcaQrTlvBase64(params: {
@@ -149,6 +154,9 @@ export function generateZatcaQrTlvBase64(params: {
   totalWithVat: string | number;
   vatTotal: string | number;
   xmlHash?: string;
+  signature?: string;
+  publicKey?: string;
+  certificateSignature?: string;
 }): string {
   const sellerName = params.sellerName.trim();
   const vatNumber = params.vatNumber.trim();
@@ -170,6 +178,15 @@ export function generateZatcaQrTlvBase64(params: {
 
   if (params.xmlHash) {
     buffers.push(encodeTlvField(6, params.xmlHash));
+  }
+  if (params.signature) {
+    buffers.push(encodeTlvField(7, params.signature));
+  }
+  if (params.publicKey) {
+    buffers.push(encodeTlvField(8, params.publicKey));
+  }
+  if (params.certificateSignature) {
+    buffers.push(encodeTlvField(9, params.certificateSignature));
   }
 
   return Buffer.concat(buffers).toString('base64');
@@ -198,8 +215,23 @@ export async function generateZatcaQrDataUrl(tlvBase64: string): Promise<string>
   });
 }
 
+export interface DecodedZatcaQr {
+  sellerName?: string; // Tag 1
+  vatNumber?: string;  // Tag 2
+  timestamp?: string;  // Tag 3
+  totalWithVat?: string; // Tag 4
+  vatTotal?: string;     // Tag 5
+  xmlHash?: string;      // Tag 6
+  signature?: string;    // Tag 7
+  publicKey?: string;    // Tag 8
+  certificateSignature?: string; // Tag 9
+  rawTags: Record<number, string>;
+  isValid: boolean;
+  errors: string[];
+}
+
 /**
- * Decode a ZATCA TLV Base64 QR Code back into tag-value pairs (for verification & testing).
+ * Decode a ZATCA TLV Base64 QR Code back into tag-value pairs and structured fields.
  */
 export function decodeZatcaQrTlvBase64(base64Str: string): Record<number, string> {
   const buf = Buffer.from(base64Str, 'base64');
@@ -217,6 +249,64 @@ export function decodeZatcaQrTlvBase64(base64Str: string): Record<number, string
   }
 
   return result;
+}
+
+/**
+ * Perform deep decoding and structural validation on a ZATCA TLV QR code payload.
+ */
+export function inspectZatcaQrCode(base64Str: string): DecodedZatcaQr {
+  const rawTags = decodeZatcaQrTlvBase64(base64Str);
+  const errors: string[] = [];
+
+  const sellerName = rawTags[1];
+  const vatNumber = rawTags[2];
+  const timestamp = rawTags[3];
+  const totalWithVat = rawTags[4];
+  const vatTotal = rawTags[5];
+  const xmlHash = rawTags[6];
+  const signature = rawTags[7];
+  const publicKey = rawTags[8];
+  const certificateSignature = rawTags[9];
+
+  if (!sellerName) errors.push('Tag 1 (Seller Name) is missing from QR payload');
+  if (!vatNumber) {
+    errors.push('Tag 2 (Seller VAT Number) is missing from QR payload');
+  } else if (!/^3\d{13}3$/.test(vatNumber)) {
+    errors.push('Tag 2 (Seller VAT Number) is invalid: must be 15 digits starting and ending with 3');
+  }
+
+  if (!timestamp) {
+    errors.push('Tag 3 (Invoice Timestamp) is missing from QR payload');
+  } else if (isNaN(new Date(timestamp).getTime())) {
+    errors.push('Tag 3 (Invoice Timestamp) is not a valid ISO 8601 date string');
+  }
+
+  if (totalWithVat === undefined) {
+    errors.push('Tag 4 (Invoice Total With VAT) is missing from QR payload');
+  } else if (isNaN(Number(totalWithVat))) {
+    errors.push('Tag 4 (Invoice Total With VAT) is not a valid numerical amount');
+  }
+
+  if (vatTotal === undefined) {
+    errors.push('Tag 5 (VAT Total) is missing from QR payload');
+  } else if (isNaN(Number(vatTotal))) {
+    errors.push('Tag 5 (VAT Total) is not a valid numerical amount');
+  }
+
+  return {
+    sellerName,
+    vatNumber,
+    timestamp,
+    totalWithVat,
+    vatTotal,
+    xmlHash,
+    signature,
+    publicKey,
+    certificateSignature,
+    rawTags,
+    isValid: errors.length === 0,
+    errors,
+  };
 }
 
 /**
@@ -449,5 +539,49 @@ export async function buildZatcaInvoiceBundle(
     xmlHash,
     icv: input.icv,
     pih: input.pih,
+  };
+}
+
+/**
+ * Validate UBL 2.1 XML structure and schema requirements per ZATCA Phase 2 rules.
+ */
+export function validateZatcaUblXml(xml: string): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (!xml || typeof xml !== 'string') {
+    return { valid: false, errors: ['XML document is empty or invalid'] };
+  }
+
+  if (!xml.includes('urn:oasis:names:specification:ubl:schema:xsd:Invoice-2')) {
+    errors.push('Missing mandatory UBL 2.1 Invoice namespace (urn:oasis:names:specification:ubl:schema:xsd:Invoice-2)');
+  }
+
+  if (!xml.includes('<cbc:ProfileID>reporting:1.0</cbc:ProfileID>')) {
+    errors.push('Missing or invalid ZATCA ProfileID (must be reporting:1.0)');
+  }
+
+  if (!/<cbc:InvoiceTypeCode(\s+[^>]*>|>)(388|381|383)<\/cbc:InvoiceTypeCode>/.test(xml)) {
+    errors.push('Invalid or missing InvoiceTypeCode (must be 388 for Tax Invoice, 381 for Credit Note, or 383 for Debit Note)');
+  }
+
+  if (!/<cbc:ID>ICV<\/cbc:ID>\s*<cbc:UUID>\d+<\/cbc:UUID>/.test(xml)) {
+    errors.push('Missing mandatory Invoice Counter Value (ICV) AdditionalDocumentReference');
+  }
+
+  if (!/<cbc:ID>PIH<\/cbc:ID>/.test(xml)) {
+    errors.push('Missing mandatory Previous Invoice Hash (PIH) AdditionalDocumentReference');
+  }
+
+  if (!/<cac:AccountingSupplierParty>[\s\S]*?<cbc:CompanyID>3\d{13}3<\/cbc:CompanyID>/.test(xml)) {
+    errors.push('Missing or invalid Supplier VAT registration number in AccountingSupplierParty');
+  }
+
+  if (!/<cac:LegalMonetaryTotal>[\s\S]*?<cbc:PayableAmount/.test(xml)) {
+    errors.push('Missing mandatory LegalMonetaryTotal PayableAmount element');
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
   };
 }

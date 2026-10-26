@@ -163,6 +163,7 @@ export function ClientDetailPage() {
   }
 
   const locale = isAr ? 'ar-SA' : 'en-SA'
+  const clientCurrency = client.currency || 'SAR'
   const BackIcon = isAr ? ArrowRight : ArrowLeft
   const isArchived = client.status === 'INACTIVE'
   const canDelete = Boolean(client.canDelete)
@@ -354,25 +355,25 @@ export function ClientDetailPage() {
           <div className="bg-white p-4 rounded-2xl border border-[#E4E7EC] shadow-card">
             <p className="text-[11px] text-[#667085]">{isAr ? 'قيمة الأعمال المسجلة' : 'Total Works Value'}</p>
             <p className="text-base font-bold text-[#1F2937] mt-2">
-              {formatCurrency(Number(client.stats?.totalWorkValue ?? 0), locale)}
+              {formatCurrency(Number(client.stats?.totalWorkValue ?? 0), locale, clientCurrency)}
             </p>
           </div>
           <div className="bg-white p-4 rounded-2xl border border-[#E4E7EC] shadow-card">
             <p className="text-[11px] text-[#667085]">{t('clients.totalBilled')}</p>
             <p className="text-base font-bold text-[#18324B] mt-2">
-              {formatCurrency(Number(client.stats?.totalInvoiceValue ?? 0), locale)}
+              {formatCurrency(Number(client.stats?.totalInvoiceValue ?? 0), locale, clientCurrency)}
             </p>
           </div>
           <div className="bg-white p-4 rounded-2xl border border-[#E4E7EC] shadow-card">
             <p className="text-[11px] text-[#667085]">{t('clients.totalPaid')}</p>
             <p className="text-base font-bold text-emerald-700 mt-2">
-              {formatCurrency(Number(client.stats?.totalPaid ?? 0), locale)}
+              {formatCurrency(Number(client.stats?.totalPaid ?? 0), locale, clientCurrency)}
             </p>
           </div>
           <div className="bg-white p-4 rounded-2xl border border-[#E4E7EC] shadow-card">
             <p className="text-[11px] text-[#667085]">{t('clients.outstanding')}</p>
             <p className="text-base font-bold text-rose-600 mt-2">
-              {formatCurrency(Number(client.stats?.outstandingBalance ?? 0), locale)}
+              {formatCurrency(Number(client.stats?.outstandingBalance ?? 0), locale, clientCurrency)}
             </p>
           </div>
         </div>
@@ -411,32 +412,34 @@ export function ClientDetailPage() {
             {!client.sites || client.sites.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#667085]">{t('sites.noSites')}</div>
             ) : (
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
-                  <tr>
-                    <th className="px-5 py-3 text-start">{t('sites.siteName')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.address')}</th>
-                    <th className="px-5 py-3 text-start">{t('sites.reference')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.status')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E4E7EC]/70">
-                  {client.sites.map((site: any) => (
-                    <tr key={site.id} className="hover:bg-[#F5F7FA]">
-                      <td className="px-5 py-3.5 font-bold text-[#18324B]">
-                        <Link to={`/sites/${site.id}`} className="hover:underline">
-                          {site.nameAr}
-                        </Link>
-                      </td>
-                      <td className="px-5 py-3.5 text-[#667085]">{site.address || '—'}</td>
-                      <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
-                        {site.referenceNo || '—'}
-                      </td>
-                      <td className="px-5 py-3.5 text-[11px]">{site.status}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-xs text-start">
+                  <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-start">{t('sites.siteName')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.address')}</th>
+                      <th className="px-5 py-3 text-start">{t('sites.reference')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.status')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#E4E7EC]/70">
+                    {client.sites.map((site: any) => (
+                      <tr key={site.id} className="hover:bg-[#F5F7FA]">
+                        <td className="px-5 py-3.5 font-bold text-[#18324B]">
+                          <Link to={`/sites/${site.id}`} className="hover:underline">
+                            {site.nameAr}
+                          </Link>
+                        </td>
+                        <td className="px-5 py-3.5 text-[#667085]">{site.address || '—'}</td>
+                        <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
+                          {site.referenceNo || '—'}
+                        </td>
+                        <td className="px-5 py-3.5 text-[11px]">{site.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
@@ -446,38 +449,40 @@ export function ClientDetailPage() {
             {!client.workEntries || client.workEntries.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#667085]">{t('workEntries.noEntries')}</div>
             ) : (
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
-                  <tr>
-                    <th className="px-5 py-3 text-start">#</th>
-                    <th className="px-5 py-3 text-start">{t('workEntries.itemName')}</th>
-                    <th className="px-5 py-3 text-start">{t('sites.siteName')}</th>
-                    <th className="px-5 py-3 text-start">{t('workEntries.quantity')}</th>
-                    <th className="px-5 py-3 text-start">{t('workEntries.totalAmount')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.status')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E4E7EC]/70">
-                  {client.workEntries.map((we: any) => (
-                    <tr key={we.id} className="hover:bg-[#F5F7FA]">
-                      <td className="px-5 py-3.5 font-mono text-[11px]">
-                        <Link to={`/work-entries/${we.id}`} className="text-[#18324B] hover:underline">
-                          {we.referenceNo}
-                        </Link>
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-[#1F2937]">{we.itemNameAr}</td>
-                      <td className="px-5 py-3.5 text-[#667085]">{we.site?.nameAr || '—'}</td>
-                      <td className="px-5 py-3.5 text-[#1F2937]">
-                        {Number(we.quantity)} {we.unit}
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-[#18324B]">
-                        {formatCurrency(Number(we.totalAmount), locale)}
-                      </td>
-                      <td className="px-5 py-3.5 text-[11px]">{we.status}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-xs text-start">
+                  <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-start">#</th>
+                      <th className="px-5 py-3 text-start">{t('workEntries.itemName')}</th>
+                      <th className="px-5 py-3 text-start">{t('sites.siteName')}</th>
+                      <th className="px-5 py-3 text-start">{t('workEntries.quantity')}</th>
+                      <th className="px-5 py-3 text-start">{t('workEntries.totalAmount')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.status')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#E4E7EC]/70">
+                    {client.workEntries.map((we: any) => (
+                      <tr key={we.id} className="hover:bg-[#F5F7FA]">
+                        <td className="px-5 py-3.5 font-mono text-[11px]">
+                          <Link to={`/work-entries/${we.id}`} className="text-[#18324B] hover:underline">
+                            {we.referenceNo}
+                          </Link>
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-[#1F2937]">{we.itemNameAr}</td>
+                        <td className="px-5 py-3.5 text-[#667085]">{we.site?.nameAr || '—'}</td>
+                        <td className="px-5 py-3.5 text-[#1F2937]">
+                          {Number(we.quantity)} {we.unit}
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-[#18324B]">
+                          {formatCurrency(Number(we.totalAmount), locale, we.currency || clientCurrency)}
+                        </td>
+                        <td className="px-5 py-3.5 text-[11px]">{we.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
@@ -489,30 +494,32 @@ export function ClientDetailPage() {
                 {t('statements.noStatements')}
               </div>
             ) : (
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
-                  <tr>
-                    <th className="px-5 py-3 text-start">{t('statements.statementNumber')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.date')}</th>
-                    <th className="px-5 py-3 text-start">{t('statements.total')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.status')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E4E7EC]/70">
-                  {client.statements.map((stm: any) => (
-                    <tr key={stm.id} className="hover:bg-[#F5F7FA]">
-                      <td className="px-5 py-3.5 font-mono text-[11px]">{stm.referenceNo}</td>
-                      <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
-                        {new Date(stm.issueDate).toLocaleDateString(locale)}
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-[#18324B]">
-                        {formatCurrency(Number(stm.totalAmount), locale)}
-                      </td>
-                      <td className="px-5 py-3.5 text-[11px]">{stm.status}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-xs text-start">
+                  <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-start">{t('statements.statementNumber')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.date')}</th>
+                      <th className="px-5 py-3 text-start">{t('statements.total')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.status')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#E4E7EC]/70">
+                    {client.statements.map((stm: any) => (
+                      <tr key={stm.id} className="hover:bg-[#F5F7FA]">
+                        <td className="px-5 py-3.5 font-mono text-[11px]">{stm.referenceNo}</td>
+                        <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
+                          {new Date(stm.issueDate).toLocaleDateString(locale)}
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-[#18324B]">
+                          {formatCurrency(Number(stm.totalAmount), locale, stm.currency || clientCurrency)}
+                        </td>
+                        <td className="px-5 py-3.5 text-[11px]">{stm.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
@@ -522,34 +529,36 @@ export function ClientDetailPage() {
             {!client.invoices || client.invoices.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#667085]">{t('invoices.noInvoices')}</div>
             ) : (
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
-                  <tr>
-                    <th className="px-5 py-3 text-start">{t('invoices.invoiceNumber')}</th>
-                    <th className="px-5 py-3 text-start">{t('invoices.issueDate')}</th>
-                    <th className="px-5 py-3 text-start">{t('invoices.total')}</th>
-                    <th className="px-5 py-3 text-start">{t('invoices.amountDue')}</th>
-                    <th className="px-5 py-3 text-start">{t('common.status')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E4E7EC]/70">
-                  {client.invoices.map((inv: any) => (
-                    <tr key={inv.id} className="hover:bg-[#F5F7FA]">
-                      <td className="px-5 py-3.5 font-mono text-[11px]">{inv.referenceNo}</td>
-                      <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
-                        {new Date(inv.issueDate).toLocaleDateString(locale)}
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-[#18324B]">
-                        {formatCurrency(Number(inv.totalAmount), locale)}
-                      </td>
-                      <td className="px-5 py-3.5 text-rose-600 font-semibold">
-                        {formatCurrency(Number(inv.remainingAmount), locale)}
-                      </td>
-                      <td className="px-5 py-3.5 text-[11px]">{inv.paymentStatus}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-xs text-start">
+                  <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-start">{t('invoices.invoiceNumber')}</th>
+                      <th className="px-5 py-3 text-start">{t('invoices.issueDate')}</th>
+                      <th className="px-5 py-3 text-start">{t('invoices.total')}</th>
+                      <th className="px-5 py-3 text-start">{t('invoices.amountDue')}</th>
+                      <th className="px-5 py-3 text-start">{t('common.status')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#E4E7EC]/70">
+                    {client.invoices.map((inv: any) => (
+                      <tr key={inv.id} className="hover:bg-[#F5F7FA]">
+                        <td className="px-5 py-3.5 font-mono text-[11px]">{inv.referenceNo}</td>
+                        <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
+                          {new Date(inv.issueDate).toLocaleDateString(locale)}
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-[#18324B]">
+                          {formatCurrency(Number(inv.totalAmount), locale, inv.currency || clientCurrency)}
+                        </td>
+                        <td className="px-5 py-3.5 text-rose-600 font-semibold">
+                          {formatCurrency(Number(inv.remainingAmount), locale, inv.currency || clientCurrency)}
+                        </td>
+                        <td className="px-5 py-3.5 text-[11px]">{inv.paymentStatus}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}
@@ -559,32 +568,34 @@ export function ClientDetailPage() {
             {!client.payments || client.payments.length === 0 ? (
               <div className="p-8 text-center text-xs text-[#667085]">{t('payments.noPayments')}</div>
             ) : (
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
-                  <tr>
-                    <th className="px-5 py-3 text-start">{t('payments.paymentDate')}</th>
-                    <th className="px-5 py-3 text-start">{t('payments.invoice')}</th>
-                    <th className="px-5 py-3 text-start">{t('payments.amount')}</th>
-                    <th className="px-5 py-3 text-start">{t('payments.method')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E4E7EC]/70">
-                  {client.payments.map((pay: any) => (
-                    <tr key={pay.id} className="hover:bg-[#F5F7FA]">
-                      <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
-                        {new Date(pay.paymentDate).toLocaleDateString(locale)}
-                      </td>
-                      <td className="px-5 py-3.5 font-mono text-[11px]">
-                        {pay.invoice?.referenceNo || '—'}
-                      </td>
-                      <td className="px-5 py-3.5 font-bold text-emerald-700">
-                        {formatCurrency(Number(pay.amount), locale)}
-                      </td>
-                      <td className="px-5 py-3.5 text-[11px]">{pay.method}</td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-xs text-start">
+                  <thead className="bg-[#F8FAFC] border-b border-[#E4E7EC] text-[11px] text-[#667085] uppercase">
+                    <tr>
+                      <th className="px-5 py-3 text-start">{t('payments.paymentDate')}</th>
+                      <th className="px-5 py-3 text-start">{t('payments.invoice')}</th>
+                      <th className="px-5 py-3 text-start">{t('payments.amount')}</th>
+                      <th className="px-5 py-3 text-start">{t('payments.method')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[#E4E7EC]/70">
+                    {client.payments.map((pay: any) => (
+                      <tr key={pay.id} className="hover:bg-[#F5F7FA]">
+                        <td className="px-5 py-3.5 text-[#667085]" dir="ltr">
+                          {new Date(pay.paymentDate).toLocaleDateString(locale)}
+                        </td>
+                        <td className="px-5 py-3.5 font-mono text-[11px]">
+                          {pay.invoice?.referenceNo || '—'}
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-emerald-700">
+                          {formatCurrency(Number(pay.amount), locale, pay.currency || clientCurrency)}
+                        </td>
+                        <td className="px-5 py-3.5 text-[11px]">{pay.method}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}

@@ -50,7 +50,8 @@ export function ProfessionalTaxInvoice({
   const getCurrencyLabels = () => {
     if (currency === 'SAR') {
       return {
-        symbol: 'SAR',
+        symbol: isAr ? 'ر.س' : 'SAR',
+        code: 'SAR',
         symbolAr: 'ر.س',
         enWord: 'Saudi Riyals',
         enFraction: 'Halalas',
@@ -61,6 +62,7 @@ export function ProfessionalTaxInvoice({
     if (currency === 'USD') {
       return {
         symbol: 'USD',
+        code: 'USD',
         symbolAr: 'د.أ',
         enWord: 'US Dollars',
         enFraction: 'Cents',
@@ -71,6 +73,7 @@ export function ProfessionalTaxInvoice({
     if (currency === 'EUR') {
       return {
         symbol: 'EUR',
+        code: 'EUR',
         symbolAr: 'يورو',
         enWord: 'Euros',
         enFraction: 'Cents',
@@ -80,6 +83,7 @@ export function ProfessionalTaxInvoice({
     }
     return {
       symbol: currency,
+      code: currency,
       symbolAr: currency,
       enWord: currency,
       enFraction: 'Parts',
@@ -134,7 +138,7 @@ export function ProfessionalTaxInvoice({
             ========================================================= */}
         <div className="flex flex-col sm:flex-row print:flex-row items-center justify-between gap-4 border-b border-gray-200 pb-3.5 print:pb-2 print:gap-2">
           {/* Left Column: English Company Identification */}
-          <div className="text-left space-y-1 text-xs text-gray-600 sm:w-[38%] print:w-[38%]" lang="en" dir="ltr">
+          <div className="text-left space-y-1 text-xs text-gray-600 sm:w-[36%] print:w-[36%]" lang="en" dir="ltr">
             <h3 className="text-base font-extrabold text-[#18324B] uppercase tracking-wide leading-tight">
               {orgSnapshot.businessNameEn || 'BUNYAN CONTRACTING CO.'}
             </h3>
@@ -162,25 +166,65 @@ export function ProfessionalTaxInvoice({
                   </span>
                 </>
               )}
+
+              {orgSnapshot.email && (
+                <>
+                  <span className="font-semibold text-gray-700 whitespace-nowrap">Email:</span>
+                  <span className="text-gray-600 font-mono whitespace-nowrap select-all" dir="ltr">
+                    {orgSnapshot.email}
+                  </span>
+                </>
+              )}
+
+              {orgSnapshot.website && (
+                <>
+                  <span className="font-semibold text-gray-700 whitespace-nowrap">Website:</span>
+                  <a
+                    href={orgSnapshot.website}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="invoice-company-website-en"
+                    className="text-gray-600 hover:text-blue-600 font-mono whitespace-nowrap select-all hover:underline"
+                    dir="ltr"
+                  >
+                    {orgSnapshot.website}
+                  </a>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Center: Corporate Brand Emblem */}
-          <div className="flex flex-col items-center justify-center shrink-0 sm:w-[24%] print:w-[24%] mx-auto py-1">
-            <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#EAF0F5] border border-[#18324B]/20 text-[#18324B] shadow-2xs">
-              <BunyanGeometricMark className="w-5 h-5 text-[#18324B]" />
-              <span className="font-extrabold text-sm tracking-wide">بنيان • BUNYAN</span>
+          {/* Center: Corporate Brand Emblem & Centered Subtitles */}
+          <div className="flex flex-col items-center justify-center text-center shrink-0 sm:w-[28%] print:w-[28%] mx-auto py-1">
+            {orgSnapshot.logoUrl ? (
+              <div className="flex flex-col items-center justify-center">
+                <img
+                  src={orgSnapshot.logoUrl}
+                  alt={orgSnapshot.businessName || 'Company Logo'}
+                  className="max-h-12 max-w-[140px] object-contain mb-1"
+                />
+                <span className="font-extrabold text-xs text-[#18324B] tracking-wide select-all">
+                  {orgSnapshot.businessName || 'بنيان • BUNYAN'}
+                </span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center justify-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#EAF0F5] border border-[#18324B]/20 text-[#18324B] shadow-2xs">
+                <BunyanGeometricMark className="w-5 h-5 text-[#18324B] shrink-0" />
+                <span className="font-extrabold text-sm tracking-wide select-all">بنيان • BUNYAN</span>
+              </div>
+            )}
+            <div className="w-full flex flex-col items-center justify-center text-center mt-1.5 space-y-0.5">
+              <span className="w-full text-center text-[10px] text-gray-600 font-bold uppercase tracking-wider whitespace-nowrap block">
+                CONSTRUCTION &amp; CONTRACTING
+              </span>
+              <span className="w-full text-center text-[9px] text-[#E29A26] font-extrabold uppercase tracking-widest whitespace-nowrap block">
+                KINGDOM OF SAUDI ARABIA
+              </span>
             </div>
-            <span className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider font-semibold">
-              Construction & Contracting
-            </span>
-            <span className="text-[9px] text-[#E29A26] font-bold tracking-widest uppercase">
-              Kingdom of Saudi Arabia
-            </span>
           </div>
 
           {/* Right Column: Arabic Company Identification */}
-          <div className="text-right space-y-1 text-xs text-gray-600 sm:w-[38%] print:w-[38%]" lang="ar" dir="rtl">
+          <div className="text-right space-y-1 text-xs text-gray-600 sm:w-[36%] print:w-[36%]" lang="ar" dir="rtl">
             <h3 className="text-base font-extrabold text-[#18324B] leading-tight">
               {orgSnapshot.businessName || 'شركة بنيان للمقاولات'}
             </h3>
@@ -206,6 +250,31 @@ export function ProfessionalTaxInvoice({
                   <span className="text-gray-600 font-mono whitespace-nowrap justify-self-start" dir="ltr">
                     {orgSnapshot.phone}
                   </span>
+                </>
+              )}
+
+              {orgSnapshot.email && (
+                <>
+                  <span className="font-semibold text-gray-700 whitespace-nowrap text-right">البريد:</span>
+                  <span className="text-gray-600 font-mono whitespace-nowrap justify-self-start select-all" dir="ltr">
+                    {orgSnapshot.email}
+                  </span>
+                </>
+              )}
+
+              {orgSnapshot.website && (
+                <>
+                  <span className="font-semibold text-gray-700 whitespace-nowrap text-right">الموقع:</span>
+                  <a
+                    href={orgSnapshot.website}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="invoice-company-website-ar"
+                    className="text-gray-600 hover:text-blue-600 font-mono whitespace-nowrap justify-self-start select-all hover:underline"
+                    dir="ltr"
+                  >
+                    {orgSnapshot.website}
+                  </a>
                 </>
               )}
             </div>
@@ -1097,7 +1166,7 @@ export function ProfessionalTaxInvoice({
                   Bank Payment Instructions
                 </span>
                 <span className="text-[10px] text-gray-500 font-mono">
-                  CURRENCY / العملة: {curr.symbol} ({curr.arWord})
+                  CURRENCY / العملة: {curr.code || curr.symbol} ({curr.arWord})
                 </span>
                 <span className="font-bold text-[#18324B] text-right" lang="ar" dir="rtl">
                   البيانات والتعليمات البنكية للسداد

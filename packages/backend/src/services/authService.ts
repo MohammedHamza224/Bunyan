@@ -197,29 +197,29 @@ export const authService = {
     });
 
     // 2. Backward-compatible alias matching for BUNYAN / ContractorFlow administration
-    if (candidates.length === 0) {
-      const isSystemAdminAlias =
-        /^(admin|info|system)@(bunyan|bunyan-sa|contractorflow)\.(local|com|sa|net|org)$/i.test(normalizedEmail) ||
-        normalizedEmail === 'admin@bunyan.sa' ||
-        normalizedEmail === 'admin@bunyan.com' ||
-        normalizedEmail === 'admin@bunyan-sa.com' ||
-        normalizedEmail === 'admin@bunyan.local' ||
-        normalizedEmail === 'info@bunyan-sa.com' ||
-        normalizedEmail === 'admin@contractorflow.local' ||
-        normalizedEmail === 'admin@contractorflow.com';
+    const isSystemAdminAlias =
+      /^(admin|info|system)@(bunyan|bunyan-sa|contractorflow)\.(local|com|sa|net|org)$/i.test(normalizedEmail) ||
+      normalizedEmail === 'admin@bunyan.sa' ||
+      normalizedEmail === 'admin@bunyan.com' ||
+      normalizedEmail === 'admin@bunyan-sa.com' ||
+      normalizedEmail === 'admin@bunyan.local' ||
+      normalizedEmail === 'info@bunyan-sa.com' ||
+      normalizedEmail === 'admin@contractorflow.local' ||
+      normalizedEmail === 'admin@contractorflow.com';
 
-      if (isSystemAdminAlias) {
-        const adminCandidates = await prisma.user.findMany({
-          where: {
-            role: UserRole.ORG_ADMIN,
-            isActive: true,
-          },
-          include: { organization: { select: { isActive: true } } },
-          orderBy: { createdAt: 'desc' },
-        });
+    if (isSystemAdminAlias) {
+      const adminCandidates = await prisma.user.findMany({
+        where: {
+          role: UserRole.ORG_ADMIN,
+          isActive: true,
+        },
+        include: { organization: { select: { isActive: true } } },
+        orderBy: { createdAt: 'desc' },
+      });
 
-        if (adminCandidates.length > 0) {
-          candidates = adminCandidates;
+      for (const ac of adminCandidates) {
+        if (!candidates.some((c) => c.id === ac.id)) {
+          candidates.push(ac);
         }
       }
     }
@@ -231,14 +231,7 @@ export const authService = {
 
     let matchedUser: (typeof activeCandidates)[0] | null = null;
     for (const candidate of activeCandidates) {
-      let passwordValid = await bcrypt.compare(input.password, candidate.passwordHash);
-
-      // Support administrative credentials seamlessly across seed and initialization versions
-      if (!passwordValid && candidate.role === UserRole.ORG_ADMIN) {
-        if (input.password === 'Admin@1234' || input.password === 'Password123!') {
-          passwordValid = true;
-        }
-      }
+      const passwordValid = await bcrypt.compare(input.password, candidate.passwordHash);
 
       if (passwordValid) {
         matchedUser = candidate;
@@ -399,7 +392,7 @@ export const authService = {
     const genericMessage =
       'If an account with that email exists, password reset instructions have been sent.';
 
-    const user = await prisma.user.findFirst({
+    let user = await prisma.user.findFirst({
       where: {
         email: { equals: normalizedEmail, mode: 'insensitive' },
         isActive: true,
@@ -407,6 +400,29 @@ export const authService = {
       include: { organization: { select: { isActive: true } } },
       orderBy: { createdAt: 'desc' },
     });
+
+    if (!user) {
+      const isSystemAdminAlias =
+        /^(admin|info|system)@(bunyan|bunyan-sa|contractorflow)\.(local|com|sa|net|org)$/i.test(normalizedEmail) ||
+        normalizedEmail === 'admin@bunyan.sa' ||
+        normalizedEmail === 'admin@bunyan.com' ||
+        normalizedEmail === 'admin@bunyan-sa.com' ||
+        normalizedEmail === 'admin@bunyan.local' ||
+        normalizedEmail === 'info@bunyan-sa.com' ||
+        normalizedEmail === 'admin@contractorflow.local' ||
+        normalizedEmail === 'admin@contractorflow.com';
+
+      if (isSystemAdminAlias) {
+        user = await prisma.user.findFirst({
+          where: {
+            role: UserRole.ORG_ADMIN,
+            isActive: true,
+          },
+          include: { organization: { select: { isActive: true } } },
+          orderBy: { createdAt: 'desc' },
+        });
+      }
+    }
 
     if (!user || !user.organization.isActive) {
       return {

@@ -13,8 +13,12 @@ import {
   X,
   AlertCircle,
   Trash2,
+  Edit2,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
 
 export function StatementsPage() {
   const { i18n } = useTranslation()
@@ -28,6 +32,17 @@ export function StatementsPage() {
   const [page, setPage] = useState(1)
 
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [editingStatement, setEditingStatement] = useState<any | null>(null)
+  const [deletingStatement, setDeletingStatement] = useState<any | null>(null)
+  const [cancellingStatement, setCancellingStatement] = useState<any | null>(null)
+  const [editForm, setEditForm] = useState({
+    title: '',
+    issueDate: '',
+    periodStart: '',
+    periodEnd: '',
+    discountAmount: '0',
+    notes: '',
+  })
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(
     null
   )
@@ -139,6 +154,30 @@ export function StatementsPage() {
     },
   })
 
+  const updateStatementMutation = useMutation({
+    mutationFn: async ({ id, payload }: { id: string; payload: any }) => {
+      const res = await api.put(`/statements/${id}`, payload)
+      return res.data?.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['statements'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      setEditingStatement(null)
+      setFeedback({
+        type: 'success',
+        message: isAr ? 'تم تحديث بيانات المستخلص بنجاح' : 'Statement updated successfully',
+      })
+    },
+    onError: (err: any) => {
+      setFeedback({
+        type: 'error',
+        message:
+          err?.response?.data?.error?.message ||
+          (isAr ? 'تعذر تحديث المستخلص' : 'Failed to update statement'),
+      })
+    },
+  })
+
   const approveMutation = useMutation({
     mutationFn: async (id: string) => {
       await api.post(`/statements/${id}/approve`)
@@ -170,7 +209,7 @@ export function StatementsPage() {
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       setFeedback({
         type: 'success',
-        message: isAr ? 'تم حذف مسودة المستخلص بنجاح' : 'Draft statement deleted successfully',
+        message: isAr ? 'تم حذف المستخلص بنجاح' : 'Statement deleted successfully',
       })
     },
     onError: (err: any) => {
@@ -178,7 +217,7 @@ export function StatementsPage() {
         type: 'error',
         message:
           err?.response?.data?.error?.message ||
-          (isAr ? 'تعذر حذف مسودة المستخلص' : 'Failed to delete draft statement'),
+          (isAr ? 'تعذر حذف المستخلص' : 'Failed to delete statement'),
       })
     },
   })
@@ -309,11 +348,11 @@ export function StatementsPage() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-gray-900">
-              {isAr ? 'إدارة المستخلصات (Statements)' : 'Work Statements'}
+              {isAr ? 'كشوف الحسابات' : 'Statements'}
             </h1>
             <p className="text-sm text-gray-500">
               {isAr
-                ? 'تجميع الأعمال المعتمدة غير المفوترة وإصدار مستخلصات رسمية للعملاء'
+                ? 'تجميع الأعمال المعتمدة غير المفوترة وإصدار كشوف حسابات رسمية للعملاء'
                 : 'Compile approved unbilled work entries into formal client statements'}
             </p>
           </div>
@@ -326,7 +365,7 @@ export function StatementsPage() {
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors shadow-sm"
         >
           <Plus className="w-4 h-4" />
-          <span>{isAr ? 'إنشاء مستخلص جديد' : 'Create Statement'}</span>
+          <span>{isAr ? 'إنشاء كشف حساب جديد' : 'Create Statement'}</span>
         </button>
       </div>
 
@@ -427,7 +466,7 @@ export function StatementsPage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm text-start">
+              <table className="w-full min-w-[720px] print:min-w-0 text-sm text-start">
                 <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                   <tr>
                     <th className="px-4 py-3 text-start font-semibold">
@@ -474,22 +513,13 @@ export function StatementsPage() {
                         {stmt.issueDate ? stmt.issueDate.slice(0, 10) : '-'}
                       </td>
                       <td className="px-4 py-3 text-gray-700">
-                        {Number(stmt.taxableAmount).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}{' '}
-                        SAR
+                        {formatCurrency(stmt.taxableAmount, isAr ? 'ar' : 'en', stmt.currency || 'SAR')}
                       </td>
                       <td className="px-4 py-3 text-gray-700">
-                        {Number(stmt.vatAmount).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}{' '}
-                        SAR ({Number(stmt.vatRate)}%)
+                        {formatCurrency(stmt.vatAmount, isAr ? 'ar' : 'en', stmt.currency || 'SAR')} ({Number(stmt.vatRate)}%)
                       </td>
                       <td className="px-4 py-3 font-bold text-gray-900">
-                        {Number(stmt.totalAmount).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                        })}{' '}
-                        SAR
+                        {formatCurrency(stmt.totalAmount, isAr ? 'ar' : 'en', stmt.currency || 'SAR')}
                       </td>
                       <td className="px-4 py-3">{statusBadge(stmt.status)}</td>
                       <td className="px-4 py-3">
@@ -507,6 +537,24 @@ export function StatementsPage() {
                             <>
                               <button
                                 type="button"
+                                onClick={() => {
+                                  setEditForm({
+                                    title: stmt.title || '',
+                                    issueDate: stmt.issueDate ? stmt.issueDate.slice(0, 10) : '',
+                                    periodStart: stmt.periodStart ? stmt.periodStart.slice(0, 10) : '',
+                                    periodEnd: stmt.periodEnd ? stmt.periodEnd.slice(0, 10) : '',
+                                    discountAmount: String(Number(stmt.discountAmount) || 0),
+                                    notes: stmt.notes || '',
+                                  })
+                                  setEditingStatement(stmt)
+                                }}
+                                title={isAr ? 'تعديل المسودة' : 'Edit Draft'}
+                                className="p-1.5 text-gray-600 hover:text-amber-600 hover:bg-amber-50 rounded-lg"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                type="button"
                                 onClick={() => approveMutation.mutate(stmt.id)}
                                 title={isAr ? 'اعتماد المستخلص' : 'Approve Statement'}
                                 className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg"
@@ -515,17 +563,7 @@ export function StatementsPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (
-                                    window.confirm(
-                                      isAr
-                                        ? `هل أنت متأكد من رغبتك في حذف مسودة المستخلص ${stmt.referenceNo} نهائياً؟`
-                                        : `Are you sure you want to permanently delete draft statement ${stmt.referenceNo}?`
-                                    )
-                                  ) {
-                                    deleteDraftMutation.mutate(stmt.id)
-                                  }
-                                }}
+                                onClick={() => setDeletingStatement(stmt)}
                                 title={isAr ? 'حذف مسودة المستخلص' : 'Delete Draft'}
                                 className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg"
                               >
@@ -548,12 +586,36 @@ export function StatementsPage() {
                           {(stmt.status === 'DRAFT' || stmt.status === 'APPROVED') && (
                             <button
                               type="button"
-                              onClick={() => cancelMutation.mutate(stmt.id)}
+                              onClick={() => setCancellingStatement(stmt)}
                               title={isAr ? 'إلغاء المستخلص' : 'Cancel Statement'}
                               className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg"
                             >
                               <XCircle className="w-4 h-4" />
                             </button>
+                          )}
+
+                          {stmt.status === 'CANCELLED' && (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingStatement(stmt)}
+                              title={isAr ? 'حذف المستخلص الملغي' : 'Delete Cancelled Statement'}
+                              className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {stmt.status === 'INVOICED' && (
+                            <span
+                              className="p-1.5 text-gray-400 cursor-not-allowed"
+                              title={
+                                isAr
+                                  ? 'مستخلص مفوتر ومرتبط بفواتير رسمية - محمي من التعديل والإلغاء المباشر'
+                                  : 'Invoiced statement linked to official invoices - locked from direct editing or cancellation'
+                              }
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                            </span>
                           )}
                         </div>
                       </td>
@@ -600,12 +662,12 @@ export function StatementsPage() {
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
               <div>
                 <h2 className="text-lg font-bold text-gray-900">
-                  {isAr ? 'إنشاء مستخلص أعمال جديد' : 'Create New Work Statement'}
+                  {isAr ? 'إنشاء كشف حساب جديد' : 'Create Statement'}
                 </h2>
                 <p className="text-xs text-gray-500">
                   {isAr
-                    ? 'اختر العميل والموقع وحدد الأعمال المعتمدة والكميات المراد إدراجها في المستخلص'
-                    : 'Select client, site, and approved work entries to include'}
+                    ? 'اختر العميل والموقع وحدد الأعمال المعتمدة والكميات المراد إدراجها في كشف الحساب'
+                    : 'Select client, site, and approved work entries to include in statement'}
                 </p>
               </div>
               <button
@@ -732,8 +794,8 @@ export function StatementsPage() {
                       : 'No approved unbilled work entries available for this client.'}
                   </div>
                 ) : (
-                  <div className="border border-gray-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
-                    <table className="w-full text-xs text-start">
+                  <div className="border border-gray-200 rounded-xl overflow-x-auto max-h-64 overflow-y-auto">
+                    <table className="w-full min-w-[620px] text-xs text-start">
                       <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                         <tr>
                           <th className="p-2.5 w-10"></th>
@@ -779,7 +841,7 @@ export function StatementsPage() {
                                 {Number(we.quantity)} {we.unit}
                               </td>
                               <td className="p-2.5 text-gray-700">
-                                {Number(we.unitPrice).toFixed(2)} SAR
+                                {formatCurrency(we.unitPrice, isAr ? 'ar' : 'en', we.currency || 'SAR')}
                               </td>
                               <td className="p-2.5">
                                 {isChecked && (
@@ -800,7 +862,7 @@ export function StatementsPage() {
                                 )}
                               </td>
                               <td className="p-2.5 text-end font-bold text-gray-900">
-                                {lineTotal.toFixed(2)} SAR
+                                {formatCurrency(lineTotal, isAr ? 'ar' : 'en', we.currency || 'SAR')}
                               </td>
                             </tr>
                           )
@@ -816,7 +878,9 @@ export function StatementsPage() {
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-gray-700 mb-1">
-                      {isAr ? 'مبلغ الخصم (SAR)' : 'Discount Amount (SAR)'}
+                      {isAr
+                        ? `مبلغ الخصم (${getCurrencySymbol('SAR', true)})`
+                        : `Discount Amount (${getCurrencySymbol('SAR', false)})`}
                     </label>
                     <input
                       type="number"
@@ -845,11 +909,11 @@ export function StatementsPage() {
                 <div className="space-y-1 text-end text-sm">
                   <div className="flex justify-between text-gray-600">
                     <span>{isAr ? 'الإجمالي قبل الضريبة:' : 'Subtotal:'}</span>
-                    <span>{draftSubtotal.toFixed(2)} SAR</span>
+                    <span>{formatCurrency(draftSubtotal, isAr ? 'ar' : 'en')}</span>
                   </div>
                   <div className="flex justify-between text-gray-600">
                     <span>{isAr ? 'الخصم:' : 'Discount:'}</span>
-                    <span>- {draftDiscount.toFixed(2)} SAR</span>
+                    <span>- {formatCurrency(draftDiscount, isAr ? 'ar' : 'en')}</span>
                   </div>
                   <div className="flex justify-between text-gray-700 font-medium">
                     <span>
@@ -857,11 +921,11 @@ export function StatementsPage() {
                         ? `ضريبة القيمة المضافة (${effectiveVatRate}%):`
                         : `VAT (${effectiveVatRate}%):`}
                     </span>
-                    <span>{draftVat.toFixed(2)} SAR</span>
+                    <span>{formatCurrency(draftVat, isAr ? 'ar' : 'en')}</span>
                   </div>
                   <div className="flex justify-between text-base font-bold text-blue-800 pt-1 border-t border-blue-200">
                     <span>{isAr ? 'الإجمالي شامل الضريبة:' : 'Total Including VAT:'}</span>
-                    <span>{draftGrandTotal.toFixed(2)} SAR</span>
+                    <span>{formatCurrency(draftGrandTotal, isAr ? 'ar' : 'en')}</span>
                   </div>
                 </div>
               </div>
@@ -889,6 +953,285 @@ export function StatementsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Statement Modal */}
+      {editingStatement && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl border border-gray-100 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  {isAr ? 'تعديل مسودة المستخلص' : 'Edit Draft Statement'}
+                </h3>
+                <span className="text-xs font-mono text-blue-600">{editingStatement.referenceNo}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingStatement(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                const discount = Number(editForm.discountAmount) || 0
+                updateStatementMutation.mutate({
+                  id: editingStatement.id,
+                  payload: {
+                    title: editForm.title.trim() || null,
+                    issueDate: editForm.issueDate || undefined,
+                    periodStart: editForm.periodStart || null,
+                    periodEnd: editForm.periodEnd || null,
+                    discountAmount: discount,
+                    notes: editForm.notes.trim() || null,
+                  },
+                })
+              }}
+              className="space-y-3.5 text-xs"
+            >
+              <div>
+                <label className="block font-semibold text-gray-700 mb-1">
+                  {isAr ? 'عنوان المستخلص' : 'Statement Title'}
+                </label>
+                <input
+                  type="text"
+                  value={editForm.title}
+                  onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500"
+                  placeholder={isAr ? 'مستخلص أعمال شهر...' : 'Progress statement for...'}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block font-semibold text-gray-700 mb-1">
+                    {isAr ? 'تاريخ الإصدار *' : 'Issue Date *'}
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editForm.issueDate}
+                    onChange={(e) => setEditForm({ ...editForm, issueDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-gray-700 mb-1">
+                    {isAr ? 'بداية الفترة' : 'Period Start'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.periodStart}
+                    onChange={(e) => setEditForm({ ...editForm, periodStart: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-gray-700 mb-1">
+                    {isAr ? 'نهاية الفترة' : 'Period End'}
+                  </label>
+                  <input
+                    type="date"
+                    value={editForm.periodEnd}
+                    onChange={(e) => setEditForm({ ...editForm, periodEnd: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-gray-700 mb-1">
+                  {isAr
+                    ? `قيمة الخصم (${getCurrencySymbol(editingStatement?.currency || 'SAR', true)})`
+                    : `Discount Amount (${getCurrencySymbol(editingStatement?.currency || 'SAR', false)})`}
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max={Number(editingStatement.subtotal)}
+                  value={editForm.discountAmount}
+                  onChange={(e) => setEditForm({ ...editForm, discountAmount: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500 font-mono"
+                />
+              </div>
+
+              <div className="p-3 bg-gray-50 rounded-lg space-y-1 text-xs">
+                <div className="flex justify-between text-gray-500">
+                  <span>{isAr ? 'المجموع قبل الخصم:' : 'Subtotal:'}</span>
+                  <span className="font-mono">
+                    {formatCurrency(editingStatement.subtotal, isAr ? 'ar' : 'en', editingStatement.currency || 'SAR')}
+                  </span>
+                </div>
+                <div className="flex justify-between font-bold text-gray-900 border-t border-gray-200 pt-1">
+                  <span>{isAr ? 'الصافي الخاضع للضريبة:' : 'Taxable Amount:'}</span>
+                  <span className="font-mono">
+                    {formatCurrency(
+                      Math.max(0, Number(editingStatement.subtotal) - (Number(editForm.discountAmount) || 0)),
+                      isAr ? 'ar' : 'en',
+                      editingStatement.currency || 'SAR'
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-gray-700 mb-1">
+                  {isAr ? 'ملاحظات' : 'Notes'}
+                </label>
+                <textarea
+                  rows={2}
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 text-xs focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingStatement(null)}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                >
+                  {isAr ? 'إلغاء' : 'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={updateStatementMutation.isPending}
+                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {updateStatementMutation.isPending
+                    ? isAr
+                      ? 'جارٍ الحفظ...'
+                      : 'Saving...'
+                    : isAr
+                    ? 'حفظ التعديلات'
+                    : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Draft Statement Modal */}
+      {deletingStatement && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-gray-100">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  {deletingStatement.status === 'CANCELLED'
+                    ? isAr
+                      ? 'تأكيد حذف المستخلص الملغي'
+                      : 'Confirm Cancelled Statement Deletion'
+                    : isAr
+                    ? 'تأكيد حذف مسودة المستخلص'
+                    : 'Confirm Statement Deletion'}
+                </h3>
+                <span className="text-xs font-mono text-gray-500">{deletingStatement.referenceNo}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {deletingStatement.status === 'CANCELLED'
+                ? isAr
+                  ? `أنت على وشك حذف المستخلص الملغي (${deletingStatement.referenceNo}) بقيمة إجمالية ${formatCurrency(deletingStatement.totalAmount, 'ar', deletingStatement.currency || 'SAR')} نهائياً. لا توجد فواتير مفعلة مرتبطة به، وسيتم توثيق عملية الحذف في سجل التدقيق.`
+                  : `Are you sure you want to permanently delete cancelled statement ${deletingStatement.referenceNo}? There are no active invoices linked, and this action will be documented in the audit trail.`
+                : isAr
+                ? `أنت على وشك حذف مسودة المستخلص (${deletingStatement.referenceNo}) بقيمة إجمالية ${formatCurrency(deletingStatement.totalAmount, 'ar', deletingStatement.currency || 'SAR')}. سيتم فك ارتباط بنود الأعمال وإعادتها لقائمة الأعمال غير المفوترة.`
+                : `Are you sure you want to permanently delete draft statement ${deletingStatement.referenceNo}? Linked work entries will be released back to the unbilled pool.`}
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setDeletingStatement(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={deleteDraftMutation.isPending}
+                onClick={() => {
+                  deleteDraftMutation.mutate(deletingStatement.id, {
+                    onSettled: () => setDeletingStatement(null),
+                  })
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteDraftMutation.isPending
+                  ? isAr
+                    ? 'جارٍ الحذف...'
+                    : 'Deleting...'
+                  : isAr
+                  ? 'تأكيد الحذف النهائي'
+                  : 'Confirm Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel Statement Modal */}
+      {cancellingStatement && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl border border-gray-100">
+            <div className="flex items-center gap-3 text-red-600">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">
+                  {isAr ? 'تأكيد إلغاء المستخلص' : 'Confirm Statement Cancellation'}
+                </h3>
+                <span className="text-xs font-mono text-gray-500">{cancellingStatement.referenceNo}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed">
+              {isAr
+                ? `سيتم تحويل حالة المستخلص (${cancellingStatement.referenceNo}) إلى "ملغي" مع الاحتفاظ بالأثر التاريخي للتدقيق وتوثيق العملية في سجل العمليات.`
+                : `Statement ${cancellingStatement.referenceNo} will be marked as CANCELLED while preserving the complete audit history.`}
+            </p>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setCancellingStatement(null)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+              >
+                {isAr ? 'تراجع' : 'Back'}
+              </button>
+              <button
+                type="button"
+                disabled={cancelMutation.isPending}
+                onClick={() => {
+                  cancelMutation.mutate(cancellingStatement.id, {
+                    onSettled: () => setCancellingStatement(null),
+                  })
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 disabled:opacity-50"
+              >
+                {cancelMutation.isPending
+                  ? isAr
+                    ? 'جارٍ الإلغاء...'
+                    : 'Cancelling...'
+                  : isAr
+                  ? 'تأكيد الإلغاء'
+                  : 'Confirm Cancel'}
+              </button>
+            </div>
           </div>
         </div>
       )}

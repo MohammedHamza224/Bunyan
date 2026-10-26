@@ -11,7 +11,6 @@ import {
   Receipt,
   Wallet,
   AlertTriangle,
-  Activity,
   Settings,
   BarChart3,
   RefreshCw,
@@ -21,8 +20,32 @@ import {
   AlertCircle,
   ClipboardList,
   ArrowUpRight,
+  Building2,
+  ChevronRight,
+  PieChart as PieChartIcon,
 } from 'lucide-react'
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  Legend as RechartsLegend,
+  PieChart,
+  Pie,
+  Cell,
+} from 'recharts'
 import { api } from '../../lib/api'
+import {
+  formatCurrency,
+  getCurrencySymbol,
+  formatDate,
+  formatNumber,
+  formatCount,
+  formatPercent,
+} from '../../lib/utils'
 
 type PeriodPreset =
   | 'all'
@@ -74,14 +97,14 @@ export function DashboardPage() {
 
   const currency = stats?.currency || orgSettings?.defaultCurrency || 'SAR'
 
+  // Centralized currency formatting guaranteeing Western digits (0–9) in both Arabic and English
   const formatMoney = (val: number | string | undefined, curr = currency) => {
-    const num = Number(val ?? 0)
-    return new Intl.NumberFormat(isAr ? 'ar-SA' : 'en-SA', {
-      style: 'currency',
-      currency: curr || 'SAR',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num)
+    return formatCurrency(val, isAr ? 'ar-SA' : 'en-US', curr)
+  }
+
+  // Integer and item count formatter with Western digits (0–9) and grouping
+  const formatItemCount = (val: number | string | undefined) => {
+    return formatCount(val, isAr ? 'ar-SA' : 'en-US')
   }
 
   const periodOptions: { key: PeriodPreset; labelAr: string; labelEn: string }[] = [
@@ -148,8 +171,8 @@ export function DashboardPage() {
       label: isAr ? 'إجمالي قيمة الفواتير المصدرة (Gross)' : 'Gross Issued Invoices Value',
       value: formatMoney(stats.grossInvoiceValue),
       subtext: isAr
-        ? `${stats.totalInvoices ?? 0} فاتورة معتمدة`
-        : `${stats.totalInvoices ?? 0} approved invoices`,
+        ? `${formatItemCount(stats.totalInvoices)} فاتورة معتمدة`
+        : `${formatItemCount(stats.totalInvoices)} approved invoices`,
       to: `/reports?tab=invoices${periodQuery}`,
       icon: Receipt,
       color: 'text-blue-600 bg-blue-50',
@@ -159,7 +182,11 @@ export function DashboardPage() {
       label: isAr ? 'صافي قيمة الفواتير بعد الإشعارات (Net)' : 'Net Invoices Value (After Notes)',
       value: formatMoney(stats.netInvoiceValue),
       subtext:
-        Number(stats.creditNotesTotal) > 0 || Number(stats.debitNotesTotal) > 0
+        stats.taxableSubtotal !== undefined && stats.vatAmount !== undefined
+          ? isAr
+            ? `قبل الضريبة: ${formatMoney(stats.taxableSubtotal)} | ض.ق.م (15%): ${formatMoney(stats.vatAmount)}`
+            : `Pre-Tax: ${formatMoney(stats.taxableSubtotal)} | VAT (15%): ${formatMoney(stats.vatAmount)}`
+          : Number(stats.creditNotesTotal) > 0 || Number(stats.debitNotesTotal) > 0
           ? isAr
             ? `إشعارات دائنة: ${formatMoney(stats.creditNotesTotal)} | مدينة: ${formatMoney(stats.debitNotesTotal)}`
             : `CN: ${formatMoney(stats.creditNotesTotal)} | DN: ${formatMoney(stats.debitNotesTotal)}`
@@ -184,8 +211,8 @@ export function DashboardPage() {
       label: isAr ? 'إجمالي الذمم المدينة المستحقة' : 'Total Outstanding Receivables',
       value: formatMoney(stats.totalOutstanding),
       subtext: isAr
-        ? `غير مسددة: ${stats.unpaidInvoicesCount ?? 0} | مسددة جزئياً: ${stats.partiallyPaidInvoicesCount ?? 0}`
-        : `Unpaid: ${stats.unpaidInvoicesCount ?? 0} | Partial: ${stats.partiallyPaidInvoicesCount ?? 0}`,
+        ? `غير مسددة: ${formatItemCount(stats.unpaidInvoicesCount)} | مسددة جزئياً: ${formatItemCount(stats.partiallyPaidInvoicesCount)}`
+        : `Unpaid: ${formatItemCount(stats.unpaidInvoicesCount)} | Partial: ${formatItemCount(stats.partiallyPaidInvoicesCount)}`,
       to: `/reports?tab=receivables`,
       icon: CreditCard,
       color: 'text-rose-600 bg-rose-50',
@@ -195,8 +222,8 @@ export function DashboardPage() {
       label: isAr ? 'الفواتير المتأخرة عن الاستحقاق' : 'Overdue Invoices',
       value: formatMoney(stats.overdueAmount),
       subtext: isAr
-        ? `${stats.overdueInvoicesCount ?? 0} فاتورة متأخرة`
-        : `${stats.overdueInvoicesCount ?? 0} overdue invoices`,
+        ? `${formatItemCount(stats.overdueInvoicesCount)} فاتورة متأخرة`
+        : `${formatItemCount(stats.overdueInvoicesCount)} overdue invoices`,
       to: `/reports?tab=aging`,
       icon: AlertTriangle,
       color: 'text-red-600 bg-red-50',
@@ -215,8 +242,8 @@ export function DashboardPage() {
       label: isAr ? 'المستخلصات المعتمدة' : 'Approved Statements',
       value: formatMoney(stats.totalStatementsValue),
       subtext: isAr
-        ? `${stats.totalStatements ?? 0} مستخلص معتمد/مفوتر`
-        : `${stats.totalStatements ?? 0} approved statements`,
+        ? `${formatItemCount(stats.totalStatements)} مستخلص معتمد/مفوتر`
+        : `${formatItemCount(stats.totalStatements)} approved statements`,
       to: `/reports?tab=statements${periodQuery}`,
       icon: FileText,
       color: 'text-purple-600 bg-purple-50',
@@ -224,10 +251,10 @@ export function DashboardPage() {
     {
       id: 'pending-approvals',
       label: isAr ? 'أعمال بانتظار الاعتماد' : 'Works Pending Approval',
-      value: String(stats.pendingApprovalCount ?? 0),
+      value: formatItemCount(stats.pendingApprovalCount),
       subtext: isAr
-        ? `العملاء النشطون: ${stats.clientCount ?? 0} | المواقع النشطة: ${stats.activeSiteCount ?? 0}`
-        : `Active Clients: ${stats.clientCount ?? 0} | Active Sites: ${stats.activeSiteCount ?? 0}`,
+        ? `العملاء النشطون: ${formatItemCount(stats.clientCount)} | المواقع النشطة: ${formatItemCount(stats.activeSiteCount)}`
+        : `Active Clients: ${formatItemCount(stats.clientCount)} | Active Sites: ${formatItemCount(stats.activeSiteCount)}`,
       to: `/reports?tab=work-entries&status=PENDING_APPROVAL`,
       icon: Clock,
       color: 'text-amber-600 bg-amber-50',
@@ -237,33 +264,83 @@ export function DashboardPage() {
   const operationalSummaryCards = [
     {
       label: t('dashboard.clientCount'),
-      value: stats.clientCount ?? 0,
+      value: formatItemCount(stats.clientCount),
       to: '/clients',
       icon: Users,
       color: 'text-blue-600 bg-blue-50',
     },
     {
       label: t('dashboard.activeSites'),
-      value: stats.activeSiteCount ?? 0,
+      value: formatItemCount(stats.activeSiteCount),
       to: '/sites',
       icon: MapPin,
       color: 'text-emerald-600 bg-emerald-50',
     },
     {
       label: isAr ? 'فواتير غير مسددة' : 'Unpaid Invoices',
-      value: stats.unpaidInvoicesCount ?? 0,
+      value: formatItemCount(stats.unpaidInvoicesCount),
       to: '/reports?tab=invoices&paymentStatus=UNPAID',
       icon: Receipt,
       color: 'text-orange-600 bg-orange-50',
     },
     {
       label: isAr ? 'فواتير مسددة جزئياً' : 'Partially Paid Invoices',
-      value: stats.partiallyPaidInvoicesCount ?? 0,
+      value: formatItemCount(stats.partiallyPaidInvoicesCount),
       to: '/reports?tab=invoices&paymentStatus=PARTIALLY_PAID',
       icon: CreditCard,
       color: 'text-cyan-600 bg-cyan-50',
     },
   ]
+
+  const CustomBarTooltip = ({ active, payload, label }: any) => {
+    if (active && payload && payload.length) {
+      return (
+        <div
+          className="bg-white p-3 rounded-xl border border-gray-200 shadow-xl text-xs space-y-1.5"
+          dir={isAr ? 'rtl' : 'ltr'}
+        >
+          <p className="font-bold text-gray-900 border-b border-gray-100 pb-1">{label}</p>
+          {payload.map((entry: any, index: number) => (
+            <div key={`bar-${index}`} className="flex items-center justify-between gap-4">
+              <span className="flex items-center gap-1.5 font-medium" style={{ color: entry.color }}>
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                {entry.name}:
+              </span>
+              <span className="font-mono font-bold text-gray-900">
+                {formatMoney(entry.value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )
+    }
+    return null
+  }
+
+  const CustomPieTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const itemData = payload[0].payload
+      return (
+        <div
+          className="bg-white p-3 rounded-xl border border-gray-200 shadow-xl text-xs space-y-1.5"
+          dir={isAr ? 'rtl' : 'ltr'}
+        >
+          <p className="font-bold border-b border-gray-100 pb-1" style={{ color: itemData.color }}>
+            {isAr ? itemData.labelAr : itemData.labelEn}
+          </p>
+          <div className="flex items-center justify-between gap-3 text-gray-600">
+            <span>{isAr ? 'عدد الفواتير:' : 'Invoices Count:'}</span>
+            <span className="font-mono font-bold text-gray-900">{formatItemCount(itemData.count)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-gray-600">
+            <span>{isAr ? 'إجمالي القيمة:' : 'Total Amount:'}</span>
+            <span className="font-mono font-bold text-gray-900">{formatMoney(itemData.amount)}</span>
+          </div>
+        </div>
+      )
+    }
+    return null
+  }
 
   return (
     <div className="space-y-6">
@@ -386,7 +463,7 @@ export function DashboardPage() {
         >
           <div className="font-medium">
             {isAr
-              ? `ملاحظة: توجد عمليات بعملات متعددة. الأرقام المعروضة أدناه خاصة بعملة (${currency}) فقط دون خلط العملات.`
+              ? `ملاحظة: توجد عمليات بعملات متعددة. الأرقام المعروضة أدناه خاصة بعملة (${getCurrencySymbol(currency, true)}) فقط دون خلط العملات.`
               : `Note: Multiple currencies detected. Figures shown below are strictly for (${currency}) without mixing currencies.`}
           </div>
           <div className="flex items-center gap-3 flex-wrap">
@@ -401,7 +478,7 @@ export function DashboardPage() {
                     : 'bg-white text-blue-700 border-blue-300'
                 }`}
               >
-                {cb.currency}: {formatMoney(cb.netInvoiceValue, cb.currency)}
+                {getCurrencySymbol(cb.currency, isAr)}: {formatMoney(cb.netInvoiceValue, cb.currency)}
               </button>
             ))}
           </div>
@@ -524,8 +601,8 @@ export function DashboardPage() {
                   </div>
                   <div className="text-end">
                     <p className="font-bold text-gray-900">{formatMoney(we.totalAmount)}</p>
-                    <p className="text-gray-400" dir="ltr">
-                      {new Date(we.workDate).toLocaleDateString(isAr ? 'ar-SA' : 'en-US')}
+                    <p className="text-gray-400">
+                      {formatDate(we.workDate, isAr ? 'ar-SA' : 'en-US')}
                     </p>
                   </div>
                 </Link>
@@ -573,7 +650,10 @@ export function DashboardPage() {
                   <div className="text-end">
                     <p className="font-bold text-teal-700">{formatMoney(we.unbilledAmount)}</p>
                     <p className="text-gray-400">
-                      {isAr ? `المتبقي: ${we.unbilledQuantity}` : `Rem: ${we.unbilledQuantity}`} {we.unit}
+                      {isAr
+                        ? `المتبقي: ${formatNumber(we.unbilledQuantity, 'ar-SA')}`
+                        : `Rem: ${formatNumber(we.unbilledQuantity, 'en-US')}`}{' '}
+                      {we.unit}
                     </p>
                   </div>
                 </Link>
@@ -661,8 +741,8 @@ export function DashboardPage() {
                   </div>
                   <div className="text-end">
                     <p className="font-bold text-emerald-700">{formatMoney(pay.amount)}</p>
-                    <p className="text-gray-400" dir="ltr">
-                      {new Date(pay.paymentDate).toLocaleDateString(isAr ? 'ar-SA' : 'en-US')}
+                    <p className="text-gray-400">
+                      {formatDate(pay.paymentDate, isAr ? 'ar-SA' : 'en-US')}
                     </p>
                   </div>
                 </div>
@@ -707,8 +787,8 @@ export function DashboardPage() {
                   </div>
                   <div className="text-end">
                     <p className="font-bold text-gray-900">{formatMoney(stm.totalAmount)}</p>
-                    <p className="text-gray-400" dir="ltr">
-                      {new Date(stm.issueDate).toLocaleDateString(isAr ? 'ar-SA' : 'en-US')}
+                    <p className="text-gray-400">
+                      {formatDate(stm.issueDate, isAr ? 'ar-SA' : 'en-US')}
                     </p>
                   </div>
                 </Link>
@@ -752,8 +832,8 @@ export function DashboardPage() {
                   </div>
                   <div className="text-end">
                     <p className="font-bold text-gray-900">{formatMoney(we.totalAmount)}</p>
-                    <p className="text-gray-400" dir="ltr">
-                      {new Date(we.workDate).toLocaleDateString(isAr ? 'ar-SA' : 'en-US')}
+                    <p className="text-gray-400">
+                      {formatDate(we.workDate, isAr ? 'ar-SA' : 'en-US')}
                     </p>
                   </div>
                 </Link>
@@ -763,41 +843,304 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent Audit Activity */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+      {/* =========================================================
+          EXECUTIVE BUSINESS ANALYTICS & CHARTS
+          ========================================================= */}
+      <div className="space-y-6 pt-2" data-testid="dashboard-analytics-section">
+        <div className="flex items-center justify-between border-b border-gray-200 pb-3">
           <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 text-blue-600" />
-            <h2 className="text-base font-semibold text-gray-900">{t('dashboard.recentActivity')}</h2>
+            <BarChart3 className="w-5 h-5 text-blue-600" />
+            <h2 className="text-base sm:text-lg font-bold text-gray-900">
+              {isAr ? 'التحليلات المالية والتشغيلية المتقدمة' : 'Executive Business Analytics'}
+            </h2>
           </div>
-          <Link to="/audit-logs" className="text-xs text-blue-600 hover:underline font-medium">
-            {isAr ? 'سجل التدقيق الكامل' : 'Full Audit Log'}
-          </Link>
+          <span className="text-xs text-gray-500">
+            {isAr
+              ? 'مؤشرات الأداء المالي والمطابقة المحاسبية المباشرة'
+              : 'Direct financial performance and reconciliation metrics'}
+          </span>
         </div>
-        <div className="p-5">
-          {!stats.recentActivity || stats.recentActivity.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-6">{t('dashboard.noActivity')}</p>
-          ) : (
-            <ul className="divide-y divide-gray-100">
-              {stats.recentActivity.map((item: any) => (
-                <li key={item.id} className="py-3 flex items-center justify-between text-sm">
-                  <div>
-                    <span className="font-medium text-gray-900">
-                      {item.user?.nameAr || item.user?.email || '—'}
-                    </span>
-                    <span className="mx-2 text-gray-400">•</span>
-                    <span className="text-gray-600">
-                      {item.description || `${item.action} (${item.entityType})`}
+
+        {/* Charts Row: Monthly Performance Bar Chart + Payment Status Donut Chart */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Main Bar Chart: Monthly Financial Performance (2 columns) */}
+          <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">
+                  {isAr ? 'الأداء المالي الشهري' : 'Monthly Financial Performance'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {isAr
+                    ? 'مقارنة الفواتير المصدرة بالتحصيلات النقدية الفعلية والرصيد المتبقي'
+                    : 'Comparison between Invoices Issued, Cash Collected, and Remaining Balance'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700">
+                  {getCurrencySymbol(currency, isAr)}
+                </span>
+                <Link
+                  to={`/reports?tab=invoices${periodQuery}`}
+                  className="p-1 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                  title={isAr ? 'عرض تقرير الفواتير المالي' : 'View Financial Invoices Report'}
+                >
+                  <ArrowUpRight className="w-4 h-4" />
+                </Link>
+              </div>
+            </div>
+
+            {stats.monthlyFinancialPerformance &&
+            stats.monthlyFinancialPerformance.some(
+              (m: any) => m.invoicedAmount !== 0 || m.collectedAmount !== 0 || m.outstandingAmount !== 0
+            ) ? (
+              <div className="h-72 w-full" dir="ltr">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={stats.monthlyFinancialPerformance || []}
+                    margin={{ top: 10, right: 10, left: 10, bottom: 20 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                    <XAxis
+                      dataKey={isAr ? 'labelAr' : 'labelEn'}
+                      tick={{ fontSize: 11, fill: '#64748B' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#E2E8F0' }}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: '#64748B' }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(val) => {
+                        const num = Number(val ?? 0)
+                        if (Math.abs(num) >= 1000) {
+                          return `${formatNumber(num / 1000, isAr ? 'ar-SA' : 'en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}k`
+                        }
+                        return formatCount(num, isAr ? 'ar-SA' : 'en-US')
+                      }}
+                    />
+                    <RechartsTooltip content={<CustomBarTooltip />} />
+                    <RechartsLegend
+                      verticalAlign="top"
+                      align="right"
+                      iconType="circle"
+                      iconSize={8}
+                      wrapperStyle={{ paddingBottom: '12px', fontSize: '12px' }}
+                    />
+                    <Bar
+                      dataKey="invoicedAmount"
+                      name={isAr ? 'الفواتير المصدرة' : 'Invoices Issued'}
+                      fill="#2563EB"
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={32}
+                    />
+                    <Bar
+                      dataKey="collectedAmount"
+                      name={isAr ? 'التحصيلات النقدية' : 'Cash Collected'}
+                      fill="#10B981"
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={32}
+                    />
+                    <Bar
+                      dataKey="outstandingAmount"
+                      name={isAr ? 'الرصيد المستحق' : 'Outstanding Balance'}
+                      fill="#F43F5E"
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={32}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div className="h-72 w-full flex flex-col items-center justify-center text-center p-6 bg-gray-50/60 rounded-xl border border-dashed border-gray-200">
+                <BarChart3 className="w-10 h-10 text-gray-300 mb-2" />
+                <p className="text-xs font-semibold text-gray-600">
+                  {isAr ? 'لا توجد حركات مالية مسجلة لهذه الفترة' : 'No financial transactions recorded for this period'}
+                </p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {isAr
+                    ? 'ستظهر مؤشرات الأداء المالي تلقائياً عند اعتماد الفواتير وتسجيل المدفوعات'
+                    : 'Performance columns will appear automatically upon issuing invoices or recording collections'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Secondary Donut Chart: Invoice Payment Status (1 column) */}
+          <div className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">
+                  {isAr ? 'حالة سداد الفواتير' : 'Invoice Payment Status'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {isAr ? 'توزيع الفواتير حسب حالة التحصيل' : 'Receivables breakdown by collection status'}
+                </p>
+              </div>
+              <PieChartIcon className="w-4 h-4 text-emerald-600" />
+            </div>
+
+            <div className="h-56 w-full relative" dir="ltr">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={stats.paymentStatusDistribution || []}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={80}
+                    paddingAngle={3}
+                    dataKey="count"
+                  >
+                    {(stats.paymentStatusDistribution || []).map((entry: any, index: number) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <RechartsTooltip content={<CustomPieTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+
+              {/* Center counter inside donut */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-xl font-extrabold text-gray-900 font-mono">
+                  {formatItemCount(stats.totalInvoices)}
+                </span>
+                <span className="text-[10px] text-gray-500">
+                  {isAr ? 'إجمالي الفواتير' : 'Total Invoices'}
+                </span>
+              </div>
+            </div>
+
+            {/* Legend Breakdown (Mutually Exclusive Partition) */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-gray-100 text-xs">
+              {(stats.paymentStatusDistribution || []).map((item: any) => (
+                <div key={item.key} className="flex flex-col p-2 rounded-lg bg-gray-50 border border-gray-100">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                    <span className="text-gray-700 font-semibold truncate text-[11px]">
+                      {isAr ? item.labelAr : item.labelEn}
                     </span>
                   </div>
-                  <span className="text-xs text-gray-400" dir="ltr">
-                    {new Date(item.createdAt).toLocaleString(isAr ? 'ar-SA' : 'en-US')}
-                  </span>
-                </li>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-gray-500">{isAr ? 'العدد' : 'Qty'}</span>
+                    <span className="font-bold font-mono text-gray-900">{formatItemCount(item.count)}</span>
+                  </div>
+                </div>
               ))}
-            </ul>
-          )}
+            </div>
+
+            {/* Dedicated Overdue Callout Banner */}
+            {Number(stats.overdueAmount) > 0 && (
+              <div className="mt-2.5 pt-2 border-t border-gray-100 flex items-center justify-between text-xs bg-rose-50/80 px-2.5 py-1.5 rounded-lg border border-rose-100">
+                <div className="flex items-center gap-1.5 text-rose-700 font-semibold">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{isAr ? 'منها متأخرة السداد:' : 'Overdue invoices:'}</span>
+                </div>
+                <Link
+                  to="/reports?tab=receivables&overdueOnly=true"
+                  className="font-bold font-mono text-rose-700 hover:underline flex items-center gap-1 text-[11px]"
+                >
+                  <span>{formatMoney(stats.overdueAmount)}</span>
+                  <span className="text-rose-600">({formatItemCount(stats.overdueInvoicesCount)})</span>
+                </Link>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* Row 4: Project Insights & Site Execution Table */}
+        {stats.projectInsights && (
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-indigo-600" />
+                <h3 className="text-sm font-bold text-gray-900">
+                  {isAr ? 'حالة المشاريع ومتابعة التنفيذ' : 'Project Insights & Execution Performance'}
+                </h3>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-gray-500">
+                  {isAr ? 'النشطة: ' : 'Active: '}
+                  <strong className="text-emerald-700 font-mono">{formatItemCount(stats.projectInsights.activeProjects)}</strong>
+                  <span className="mx-1">/</span>
+                  {isAr ? 'الإجمالي: ' : 'Total: '}
+                  <strong className="text-gray-900 font-mono">{formatItemCount(stats.projectInsights.totalProjects)}</strong>
+                </span>
+                <Link to="/sites" className="text-xs text-blue-600 hover:underline font-medium">
+                  {isAr ? 'كل المشاريع' : 'All Sites'}
+                </Link>
+              </div>
+            </div>
+
+            {!stats.projectInsights.projectsList || stats.projectInsights.projectsList.length === 0 ? (
+              <p className="text-xs text-gray-500 text-center py-8">
+                {isAr ? 'لا توجد مشاريع مضافة حتى الآن' : 'No projects recorded yet'}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] print:min-w-0 text-xs text-start">
+                  <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+                    <tr>
+                      <th className="py-2.5 px-4 text-start font-semibold">{isAr ? 'المشروع' : 'Project / Site'}</th>
+                      <th className="py-2.5 px-4 text-start font-semibold">{isAr ? 'العميل' : 'Client'}</th>
+                      <th className="py-2.5 px-4 text-start font-semibold">{isAr ? 'الحالة' : 'Status'}</th>
+                      <th className="py-2.5 px-4 text-end font-semibold">{isAr ? 'الأعمال غير المفوترة' : 'Unbilled Works'}</th>
+                      <th className="py-2.5 px-4 text-end font-semibold">{isAr ? 'الإجراء' : 'Action'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {stats.projectInsights.projectsList.map((p: any) => (
+                      <tr key={p.id} className="hover:bg-gray-50/60 transition-colors">
+                        <td className="py-2.5 px-4 font-bold text-gray-900">
+                          {isAr ? p.nameAr : p.nameEn || p.nameAr}
+                        </td>
+                        <td className="py-2.5 px-4 text-gray-600">
+                          {isAr ? p.clientNameAr : p.clientNameEn || p.clientNameAr}
+                        </td>
+                        <td className="py-2.5 px-4">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                              p.status === 'ACTIVE'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-gray-100 text-gray-600 border border-gray-200'
+                            }`}
+                          >
+                            {p.status === 'ACTIVE'
+                              ? isAr
+                                ? 'نشط'
+                                : 'Active'
+                              : isAr
+                              ? 'مكتمل / متوقف'
+                              : 'Inactive'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-end">
+                          <span className="font-mono font-bold text-gray-900">
+                            {formatMoney(p.unbilledAmount)}
+                          </span>
+                          {p.unbilledWorkCount > 0 && (
+                            <span className="text-[10px] text-gray-400 block">
+                              ({formatItemCount(p.unbilledWorkCount)} {isAr ? 'بند' : 'items'})
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-4 text-end">
+                          <Link
+                            to={`/sites/${p.id}`}
+                            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 font-semibold text-[11px]"
+                          >
+                            <span>{isAr ? 'تفاصيل' : 'View'}</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

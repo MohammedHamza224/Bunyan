@@ -4,27 +4,63 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ShieldCheck,
   ShieldAlert,
-  Filter,
   Download,
   Trash2,
-  Calendar,
-  User as UserIcon,
   Search,
   X,
   AlertTriangle,
   CheckCircle2,
   Lock,
-  FileSpreadsheet,
   Layers,
   DollarSign,
   RefreshCw,
   Clock,
+  ChevronDown,
+  ChevronUp,
+  FileCode,
+  Terminal,
+  Activity,
+  AlertCircle,
+  Sparkles,
+  SlidersHorizontal,
+  Eye,
+  Calendar,
   ExternalLink,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../store/authStore'
+import { AuditDetailModal } from '../../components/audit/AuditDetailModal'
+import { RecordLink } from '../../components/audit/RecordLink'
+import {
+  getActionLabel,
+  getEntityLabel,
+  getActionBadgeStyle,
+  formatAuditReference,
+  formatAuditDescription,
+} from '../../lib/auditFormatters'
 
-type AuditCategory = 'ALL' | 'SECURITY' | 'FINANCIAL' | 'BUSINESS'
+type AuditCategory = 'ALL' | 'FINANCIAL' | 'BUSINESS' | 'SECURITY' | 'TECHNICAL_DIAGNOSTIC'
+type CleanupTab = 'RETENTION' | 'CLEAR_DEV'
+
+interface AuditRecord {
+  id: string
+  createdAt: string
+  action: string
+  entityType: string
+  entityId?: string
+  description?: string
+  category?: string
+  ipAddress?: string
+  userAgent?: string
+  user?: {
+    id: string
+    nameAr?: string
+    nameEn?: string
+    email?: string
+    role?: string
+  }
+  metadata?: Record<string, any>
+}
 
 export function AuditLogsPage() {
   const { i18n } = useTranslation()
@@ -35,48 +71,71 @@ export function AuditLogsPage() {
   const isAdmin = user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN'
 
   // Filter state
+  const [search, setSearch] = useState('')
   const [category, setCategory] = useState<AuditCategory>('ALL')
   const [action, setAction] = useState('')
-  const [entityType, setEntityType] = useState('')
-  const [actorUserId, setActorUserId] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
-  const [search, setSearch] = useState('')
+  const [entityType, setEntityType] = useState('')
+  const [actorUserId, setActorUserId] = useState('')
+  const [eligibility, setEligibility] = useState('')
+  const [isAdvancedFiltersOpen, setIsAdvancedFiltersOpen] = useState(false)
   const [page, setPage] = useState(1)
   const limit = 20
 
+  // Details Modal State
+  const [selectedRecord, setSelectedRecord] = useState<AuditRecord | null>(null)
+
   // Export State
   const [isExporting, setIsExporting] = useState(false)
-  const [exportSuccessMsg, setExportSuccessMsg] = useState<string | null>(null)
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null)
 
-  // Retention Modal State
-  const [isRetentionModalOpen, setIsRetentionModalOpen] = useState(false)
+  // Direct Clear Audit Log State
+  const [isClearModalOpen, setIsClearModalOpen] = useState(false)
+  const [isConfirmChecked, setIsConfirmChecked] = useState(false)
+  const [clearFeedback, setClearFeedback] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
+
+  // Cleanup & Retention Modal State
+  const [isCleanupModalOpen, setIsCleanupModalOpen] = useState(false)
+  const [activeCleanupTab, setActiveCleanupTab] = useState<CleanupTab>('RETENTION')
   const [retentionDays, setRetentionDays] = useState(90)
   const [confirmToken, setConfirmToken] = useState('')
   const [policyAcknowledged, setPolicyAcknowledged] = useState(false)
-  const [cleanupResult, setCleanupResult] = useState<{ count: number; date: string } | null>(null)
-  const [cleanupError, setCleanupError] = useState<string | null>(null)
+  const [clearDevToken, setClearDevToken] = useState('')
+  const [showPolicyDetails, setShowPolicyDetails] = useState(false)
+  const [operationFeedback, setOperationFeedback] = useState<{
+    type: 'success' | 'error'
+    message: string
+  } | null>(null)
 
-  // Reset Test Audit Logs State (Development only)
-  const [resetToken, setResetToken] = useState('')
-  const [resetResult, setResetResult] = useState<{ count: number; date: string } | null>(null)
-  const [resetError, setResetError] = useState<string | null>(null)
+  // 1. Fetch Executive Stats
+  const { data: statsData, isFetching: isStatsFetching, refetch: refetchStats } = useQuery({
+    queryKey: ['auditLogsStats'],
+    queryFn: async () => {
+      const res = await api.get('/audit-logs/stats')
+      return res.data?.data
+    },
+    enabled: isAdmin,
+  })
 
-  // Query Actors for actor dropdown
+  // 2. Fetch Actors for filter
   const { data: actorsData } = useQuery({
     queryKey: ['auditLogActors'],
     queryFn: async () => {
       const res = await api.get('/audit-logs/actors')
       return res.data?.data || []
     },
-    enabled: isAdmin,
+    enabled: isAdmin && isAdvancedFiltersOpen,
   })
 
-  // Query Audit Logs with all active filters
+  // 3. Fetch Audit Logs
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: [
       'auditLogs',
-      { category, action, entityType, actorUserId, dateFrom, dateTo, search, page, limit },
+      { category, action, entityType, actorUserId, dateFrom, dateTo, search, eligibility, page, limit },
     ],
     queryFn: async () => {
       const params: Record<string, any> = { page, limit }
@@ -87,16 +146,18 @@ export function AuditLogsPage() {
       if (dateFrom) params.dateFrom = dateFrom
       if (dateTo) params.dateTo = dateTo
       if (search.trim()) params.search = search.trim()
+      if (eligibility) params.eligibility = eligibility
 
       const res = await api.get('/audit-logs', { params })
       return res.data?.data
     },
   })
 
-  // Query Retention Preview when modal opens or retentionDays changes
+  // 4. Query Retention Preview when modal opens
   const {
     data: previewData,
     isLoading: isPreviewLoading,
+    refetch: refetchPreview,
   } = useQuery({
     queryKey: ['retentionPreview', retentionDays],
     queryFn: async () => {
@@ -105,11 +166,51 @@ export function AuditLogsPage() {
       })
       return res.data?.data
     },
-    enabled: isRetentionModalOpen && isAdmin,
+    enabled: isCleanupModalOpen && activeCleanupTab === 'RETENTION' && isAdmin,
   })
 
-  // Mutation for executing safe retention cleanup
-  const cleanupMutation = useMutation({
+  const handleRefreshAll = () => {
+    refetch()
+    refetchStats()
+    if (isCleanupModalOpen) refetchPreview()
+  }
+
+  // Mutation: Direct Clear Audit Log
+  const clearAuditLogMutation = useMutation({
+    mutationFn: async (payload: { confirmed: boolean; preserveStatutory?: boolean }) => {
+      const res = await api.post('/audit-logs/clear', payload)
+      return res.data?.data || res.data
+    },
+    onSuccess: (resData) => {
+      setIsClearModalOpen(false)
+      setIsConfirmChecked(false)
+      setPage(1)
+      queryClient.invalidateQueries({ queryKey: ['auditLogs'] })
+      queryClient.invalidateQueries({ queryKey: ['auditLogsStats'] })
+      queryClient.invalidateQueries({ queryKey: ['retentionPreview'] })
+      setClearFeedback({
+        type: 'success',
+        message:
+          resData?.message ||
+          (isAr
+            ? `تم تفريغ ${resData?.purgedCount ?? 0} سجل تدقيق بنجاح.`
+            : `Successfully cleared ${resData?.purgedCount ?? 0} audit logs.`),
+      })
+      setTimeout(() => setClearFeedback(null), 6000)
+    },
+    onError: (err: any) => {
+      setClearFeedback({
+        type: 'error',
+        message:
+          err.response?.data?.error?.message ||
+          err.response?.data?.message ||
+          (isAr ? 'تعذر تفريغ سجل التدقيق' : 'Failed to clear audit log'),
+      })
+    },
+  })
+
+  // Mutation: Execute Retention Cleanup
+  const retentionCleanupMutation = useMutation({
     mutationFn: async () => {
       const trimmedToken = confirmToken.trim()
       const res = await api.post('/audit-logs/cleanup/execute', {
@@ -120,51 +221,65 @@ export function AuditLogsPage() {
       })
       return res.data?.data
     },
-    onSuccess: (data) => {
-      setCleanupResult({ count: data?.purgedCount ?? 0, date: new Date().toLocaleTimeString() })
-      setCleanupError(null)
+    onSuccess: (resData) => {
+      setOperationFeedback({
+        type: 'success',
+        message: isAr
+          ? `تم حذف ${resData?.purgedCount ?? 0} سجل منتهي الصلاحية بنجاح. المتبقي: ${resData?.remainingCount ?? 0}.`
+          : `Successfully purged ${resData?.purgedCount ?? 0} expired records. Remaining: ${resData?.remainingCount ?? 0}.`,
+      })
       setConfirmToken('')
       setPolicyAcknowledged(false)
       queryClient.invalidateQueries({ queryKey: ['auditLogs'] })
+      queryClient.invalidateQueries({ queryKey: ['auditLogsStats'] })
       queryClient.invalidateQueries({ queryKey: ['retentionPreview'] })
     },
     onError: (err: any) => {
-      const msg =
-        err.response?.data?.error?.message ||
-        err.response?.data?.message ||
-        (isAr ? 'فشلت عملية التنظيف، يرجى التحقق من المدخلات' : 'Cleanup failed. Check inputs.')
-      setCleanupError(msg)
+      setOperationFeedback({
+        type: 'error',
+        message:
+          err.response?.data?.error?.message ||
+          err.response?.data?.message ||
+          (isAr ? 'فشلت عملية تنظيف السجلات' : 'Retention cleanup failed'),
+      })
     },
   })
 
-  // Mutation for Reset Test Audit Logs (Development Mode Only)
-  const resetMutation = useMutation({
+  // Mutation: Clear Development / Test Logs
+  const clearDevLogsMutation = useMutation({
     mutationFn: async () => {
-      const res = await api.post('/audit-logs/reset-test-logs', {
-        confirmationToken: resetToken.trim(),
+      const trimmed = clearDevToken.trim().toUpperCase()
+      const res = await api.post('/audit-logs/cleanup/dev-test', {
+        confirmationToken: trimmed,
+        confirmToken: trimmed,
+        recordSecurityLog: false,
       })
-      return res.data?.data
+      return res.data?.data || res.data
     },
-    onSuccess: (data) => {
-      setResetResult({
-        count: data?.deletedCount ?? 0,
-        date: new Date().toLocaleTimeString(),
+    onSuccess: (resData) => {
+      setOperationFeedback({
+        type: 'success',
+        message: isAr
+          ? `تم تفريغ ${resData?.purgedCount ?? 0} سجل اختبار بنجاح، مع الحفاظ الكامل على ${resData?.preservedCount ?? 0} سجل مالي وضريبي.`
+          : `Successfully cleared ${resData?.purgedCount ?? 0} test/dev logs while strictly preserving ${resData?.preservedCount ?? 0} financial records.`,
       })
-      setResetError(null)
-      setResetToken('')
+      setClearDevToken('')
       queryClient.invalidateQueries({ queryKey: ['auditLogs'] })
+      queryClient.invalidateQueries({ queryKey: ['auditLogsStats'] })
       queryClient.invalidateQueries({ queryKey: ['retentionPreview'] })
     },
     onError: (err: any) => {
-      const msg =
-        err.response?.data?.error?.message ||
-        err.response?.data?.message ||
-        (isAr ? 'فشلت عملية إعادة ضبط سجلات الفحص' : 'Reset failed')
-      setResetError(msg)
+      setOperationFeedback({
+        type: 'error',
+        message:
+          err.response?.data?.error?.message ||
+          err.response?.data?.message ||
+          (isAr ? 'فشلت عملية تفريغ سجلات الاختبار' : 'Failed to clear development logs'),
+      })
     },
   })
 
-  const logs = data?.items || []
+  const logs: AuditRecord[] = data?.items || []
   const pagination = {
     page: data?.page || 1,
     totalPages: data?.totalPages || 1,
@@ -172,31 +287,33 @@ export function AuditLogsPage() {
   }
 
   const hasActiveFilters = Boolean(
-    category !== 'ALL' ||
+    search.trim() ||
+      category !== 'ALL' ||
       action ||
-      entityType ||
-      actorUserId ||
       dateFrom ||
       dateTo ||
-      search.trim()
+      entityType ||
+      actorUserId ||
+      eligibility
   )
 
   const handleResetFilters = () => {
+    setSearch('')
     setCategory('ALL')
     setAction('')
-    setEntityType('')
-    setActorUserId('')
     setDateFrom('')
     setDateTo('')
-    setSearch('')
+    setEntityType('')
+    setActorUserId('')
+    setEligibility('')
     setPage(1)
   }
 
-  // Handle Secure CSV Export
+  // Handle CSV Export
   const handleExportCsv = async () => {
     try {
       setIsExporting(true)
-      setExportSuccessMsg(null)
+      setExportFeedback(null)
 
       const params = new URLSearchParams()
       if (category !== 'ALL') params.append('category', category)
@@ -206,6 +323,7 @@ export function AuditLogsPage() {
       if (dateFrom) params.append('dateFrom', dateFrom)
       if (dateTo) params.append('dateTo', dateTo)
       if (search.trim()) params.append('search', search.trim())
+      if (eligibility) params.append('eligibility', eligibility)
 
       const response = await api.get(`/audit-logs/export?${params.toString()}`, {
         responseType: 'blob',
@@ -221,565 +339,614 @@ export function AuditLogsPage() {
       document.body.removeChild(a)
       window.URL.revokeObjectURL(url)
 
-      setExportSuccessMsg(
-        isAr ? 'تم تصدير سجل العمليات بنجاح (CSV)' : 'Audit logs exported successfully (CSV)'
+      setExportFeedback(
+        isAr ? 'تم تصدير سجل العمليات بنجاح' : 'Audit log exported successfully'
       )
-      setTimeout(() => setExportSuccessMsg(null), 5000)
-      queryClient.invalidateQueries({ queryKey: ['auditLogs'] })
-    } catch (err: any) {
-      console.error('Export failed:', err)
+      setTimeout(() => setExportFeedback(null), 4000)
+    } catch {
       alert(
         isAr
           ? 'تعذر تصدير السجل، تأكد من صلاحيات حسابك.'
-          : 'Failed to export audit logs. Check your permissions.'
+          : 'Failed to export audit logs. Please verify permissions.'
       )
     } finally {
       setIsExporting(false)
     }
   }
 
-  // Visual helper for category badges
-  const renderCategoryBadge = (cat?: string) => {
-    switch (cat) {
-      case 'SECURITY':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200">
-            <Lock className="w-3 h-3" />
-            {isAr ? 'أمان ووصول' : 'Security'}
-          </span>
-        )
-      case 'FINANCIAL':
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-            <DollarSign className="w-3 h-3" />
-            {isAr ? 'مالي وفواتير' : 'Financial'}
-          </span>
-        )
-      case 'BUSINESS':
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-sky-100 text-sky-800 border border-sky-200">
-            <Layers className="w-3 h-3" />
-            {isAr ? 'أعمال وبيانات' : 'Business'}
-          </span>
-        )
-    }
-  }
-
-  // Visual helper for action badges
+  // Badges
   const renderActionBadge = (act: string) => {
-    let colorClasses = 'bg-gray-100 text-gray-800 border-gray-200'
+    let color = 'bg-gray-100 text-gray-800 border-gray-200'
     if (act.includes('DELETE') || act.includes('PURGE') || act.includes('CANCEL')) {
-      colorClasses = 'bg-rose-100 text-rose-800 border-rose-200'
+      color = 'bg-rose-50 text-rose-700 border-rose-200'
     } else if (act.includes('APPROVE') || act.includes('ISSUE')) {
-      colorClasses = 'bg-emerald-100 text-emerald-800 border-emerald-200'
+      color = 'bg-emerald-50 text-emerald-700 border-emerald-200'
     } else if (act.includes('UPDATE')) {
-      colorClasses = 'bg-amber-100 text-amber-800 border-amber-200'
+      color = 'bg-amber-50 text-amber-700 border-amber-200'
     } else if (act.includes('LOGIN') || act.includes('LOGOUT')) {
-      colorClasses = 'bg-indigo-100 text-indigo-800 border-indigo-200'
-    } else if (act.includes('EXPORT') || act.includes('RETENTION')) {
-      colorClasses = 'bg-cyan-100 text-cyan-800 border-cyan-200'
+      color = 'bg-blue-50 text-blue-700 border-blue-200'
     }
 
     return (
-      <span
-        className={`px-2 py-0.5 rounded-md text-xs font-mono font-bold border ${colorClasses}`}
-      >
+      <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold border ${color}`}>
         {act}
       </span>
     )
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* =========================================================
-          1. Page Header & Primary Actions (Export & Retention)
+          Area 1: Compact Page Header
           ========================================================= */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
-        <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-[#18324B] text-white flex items-center justify-center shadow-md shrink-0">
-            <ShieldCheck className="w-6 h-6 text-[#E29A26]" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-extrabold text-[#18324B]">
-                {isAr ? 'سجل العمليات والتدقيق الأمني' : 'Enterprise Audit Log & Security Trail'}
-              </h1>
-              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                {isAr ? 'غير قابل للتعديل' : 'Immutable'}
-              </span>
-            </div>
-            <p className="text-sm text-gray-500 mt-1 max-w-2xl leading-relaxed">
-              {isAr
-                ? 'توثيق أمني وقانوني غير قابل للتعديل لجميع العمليات المالية (الفواتير والمستخلصات)، الإدارية (إنشاء وتعديل الكيانات)، وحركات الدخول والأمان.'
-                : 'Tamper-evident legal audit log tracking financial, administrative, security, and authentication events with immutable audit compliance.'}
-            </p>
-          </div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white px-5 py-4 rounded-xl border border-gray-200 shadow-2xs">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900 tracking-tight">
+            {isAr ? 'سجل التدقيق' : 'Audit Log'}
+          </h1>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {isAr
+              ? 'متابعة العمليات والتغييرات المهمة داخل النظام.'
+              : 'Monitor key operations and changes across the system.'}
+          </p>
         </div>
 
-        {/* Admin Action Buttons */}
-        <div className="flex flex-wrap items-center gap-2.5 pt-2 lg:pt-0">
+        <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-gray-300 text-sm font-semibold text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-2xs disabled:opacity-50"
-            title={isAr ? 'تحديث البيانات' : 'Refresh'}
+            onClick={handleRefreshAll}
+            disabled={isFetching || isStatsFetching}
+            className="p-2 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors disabled:opacity-50"
+            title={isAr ? 'تحديث السجلات' : 'Refresh'}
+            aria-label={isAr ? 'تحديث السجلات' : 'Refresh'}
           >
-            <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-blue-600' : ''}`} />
-            <span className="hidden sm:inline">{isAr ? 'تحديث' : 'Refresh'}</span>
+            <RefreshCw className={`w-4 h-4 ${isFetching || isStatsFetching ? 'animate-spin text-blue-600' : ''}`} />
           </button>
 
-          {isAdmin && (
-            <>
-              {/* CSV Export Button */}
-              <button
-                type="button"
-                onClick={handleExportCsv}
-                disabled={isExporting}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 text-sm font-semibold text-[#18324B] bg-white hover:bg-gray-50 transition-colors shadow-2xs disabled:opacity-50"
-              >
-                <Download className="w-4 h-4 text-blue-600" />
-                <span>
-                  {isExporting
-                    ? isAr
-                      ? 'جاري التصدير...'
-                      : 'Exporting...'
-                    : isAr
-                    ? 'تصدير السجل (CSV)'
-                    : 'Export CSV'}
-                </span>
-              </button>
+          {/* Primary Action Button: Export Log */}
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={isExporting}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>
+              {isExporting
+                ? isAr
+                  ? 'جاري التصدير...'
+                  : 'Exporting...'
+                : isAr
+                ? 'تصدير السجل'
+                : 'Export Log'}
+            </span>
+          </button>
 
-              {/* Retention & Safe Cleanup Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  setCleanupResult(null)
-                  setCleanupError(null)
-                  setIsRetentionModalOpen(true)
-                }}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#18324B] hover:bg-[#12263a] text-white text-sm font-semibold transition-all shadow-sm"
-              >
-                <ShieldAlert className="w-4 h-4 text-[#E29A26]" />
-                <span>{isAr ? 'سياسة الحفظ والتنظيف' : 'Retention & Cleanup'}</span>
-              </button>
-            </>
+          {/* Action Button: Clear Audit Log */}
+          {isAdmin && (
+            <button
+              type="button"
+              data-testid="clear-audit-log-btn"
+              onClick={() => {
+                setIsConfirmChecked(false)
+                setIsClearModalOpen(true)
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold shadow-2xs transition-colors"
+              title={isAr ? 'تفريغ سجل التدقيق' : 'Clear Audit Log'}
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+              <span>{isAr ? 'تفريغ سجل التدقيق' : 'Clear Audit Log'}</span>
+            </button>
+          )}
+
+          {/* Secondary Action Button: Manage Retention */}
+          {isAdmin && (
+            <button
+              type="button"
+              data-testid="audit-retention-modal-btn"
+              onClick={() => {
+                setOperationFeedback(null)
+                setIsCleanupModalOpen(true)
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 transition-colors shadow-2xs"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+              <span>{isAr ? 'إدارة الاحتفاظ بالسجلات' : 'Manage Log Retention'}</span>
+            </button>
           )}
         </div>
       </div>
 
-      {/* Export notification banner */}
-      {exportSuccessMsg && (
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-sm flex items-center justify-between">
+      {/* Clear Audit Log Toast Feedback */}
+      {clearFeedback && (
+        <div
+          className={`px-4 py-2.5 rounded-lg border text-xs flex items-center justify-between ${
+            clearFeedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-            <span className="font-medium">{exportSuccessMsg}</span>
+            {clearFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-rose-600" />
+            )}
+            <span>{clearFeedback.message}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setExportSuccessMsg(null)}
-            className="text-emerald-700 hover:text-emerald-900"
-          >
-            <X className="w-4 h-4" />
+          <button type="button" onClick={() => setClearFeedback(null)}>
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Export Toast Feedback */}
+      {exportFeedback && (
+        <div className="px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <span>{exportFeedback}</span>
+          </div>
+          <button type="button" onClick={() => setExportFeedback(null)}>
+            <X className="w-3.5 h-3.5 text-emerald-600" />
           </button>
         </div>
       )}
 
       {/* =========================================================
-          2. Category Tabs Filter (All / Security / Financial / Business)
+          Area 2: Three Summary Cards Only
           ========================================================= */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1">
-        <button
-          type="button"
-          onClick={() => {
-            setCategory('ALL')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shrink-0 ${
-            category === 'ALL'
-              ? 'bg-[#18324B] text-white shadow-sm'
-              : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-          }`}
-        >
-          <Filter className="w-4 h-4" />
-          <span>{isAr ? 'جميع العمليات (All)' : 'All Operations'}</span>
-        </button>
+      {isAdmin && statsData && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5" data-testid="audit-summary-cards">
+          {/* Card 1: Total Audit Records */}
+          <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <span className="text-xs font-medium text-gray-500 block">
+                {isAr ? 'إجمالي السجلات' : 'Total Audit Records'}
+              </span>
+              <span className="text-2xl font-bold text-gray-900 font-mono mt-1 block">
+                {statsData.totalRecords ?? 0}
+              </span>
+            </div>
+            <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+              <Layers className="w-5 h-5" />
+            </div>
+          </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setCategory('SECURITY')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shrink-0 ${
-            category === 'SECURITY'
-              ? 'bg-purple-700 text-white shadow-sm'
-              : 'bg-white text-gray-700 hover:bg-purple-50 border border-gray-200'
-          }`}
-        >
-          <Lock className="w-4 h-4 text-purple-600" />
-          <span>{isAr ? 'سجلات الأمان والوصول (Security)' : 'Security & Auth'}</span>
-        </button>
+          {/* Card 2: Today's Events */}
+          <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <span className="text-xs font-medium text-gray-500 block">
+                {isAr ? 'عمليات اليوم' : 'Audit Events Recorded Today'}
+              </span>
+              <span className="text-2xl font-bold text-gray-900 font-mono mt-1 block">
+                {statsData.todayRecords ?? 0}
+              </span>
+            </div>
+            <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setCategory('FINANCIAL')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shrink-0 ${
-            category === 'FINANCIAL'
-              ? 'bg-emerald-700 text-white shadow-sm'
-              : 'bg-white text-gray-700 hover:bg-emerald-50 border border-gray-200'
-          }`}
-        >
-          <DollarSign className="w-4 h-4 text-emerald-600" />
-          <span>{isAr ? 'السجلات المالية والفواتير (Financial)' : 'Financial & Billing'}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setCategory('BUSINESS')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all shrink-0 ${
-            category === 'BUSINESS'
-              ? 'bg-sky-700 text-white shadow-sm'
-              : 'bg-white text-gray-700 hover:bg-sky-50 border border-gray-200'
-          }`}
-        >
-          <Layers className="w-4 h-4 text-sky-600" />
-          <span>{isAr ? 'بيانات الأعمال والتشغيل (Business)' : 'Business Operations'}</span>
-        </button>
-      </div>
+          {/* Card 3: Protected Records */}
+          <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <span className="text-xs font-medium text-gray-500 block">
+                {isAr ? 'سجلات محمية' : 'Protected Records'}
+              </span>
+              <span className="text-2xl font-bold text-emerald-700 font-mono mt-1 block">
+                {statsData.protectedCount ?? 0}
+              </span>
+            </div>
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* =========================================================
-          3. Multi-Criteria Filter Toolbar
+          Area 3: Consolidated Search and Filters
           ========================================================= */}
-      <div className="bg-white p-4 sm:p-5 rounded-2xl border border-gray-200 shadow-sm space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          {/* Action Filter */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'نوع العملية' : 'Action'}
-            </label>
+      <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-2xs space-y-3">
+        {/* Primary Filter Row */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-12 gap-2.5">
+          {/* Search Query */}
+          <div className="lg:col-span-4 relative">
+            <input
+              type="text"
+              placeholder={isAr ? 'بحث بالمستخدم، المعرف، الوصف...' : 'Search by user, record ID, description...'}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
+              className="w-full pe-8 ps-3 py-2 rounded-lg border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <Search className="w-3.5 h-3.5 text-gray-400 absolute end-2.5 top-2.5 pointer-events-none" />
+          </div>
+
+          {/* Record Category */}
+          <div className="lg:col-span-3">
+            <select
+              value={category}
+              onChange={(e) => {
+                setCategory(e.target.value as AuditCategory)
+                setPage(1)
+              }}
+              className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="ALL">{isAr ? 'جميع التصنيفات' : 'All Categories'}</option>
+              <option value="FINANCIAL">{isAr ? 'مالي وضريبي (فواتير/دفعات)' : 'Financial & Tax'}</option>
+              <option value="BUSINESS">{isAr ? 'أعمال ومشاريع (مستخلصات/بنود)' : 'Business & Projects'}</option>
+              <option value="SECURITY">{isAr ? 'أمان ومستخدمين (تسجيل/صلاحيات)' : 'Security & Access'}</option>
+              <option value="TECHNICAL_DIAGNOSTIC">{isAr ? 'تقني وتشخيص' : 'Technical & Diagnostics'}</option>
+            </select>
+          </div>
+
+          {/* Action Type */}
+          <div className="lg:col-span-2">
             <select
               value={action}
               onChange={(e) => {
                 setAction(e.target.value)
                 setPage(1)
               }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-2.5 py-2 rounded-lg border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">{isAr ? 'جميع العمليات' : 'All Actions'}</option>
-              <option value="CREATE">{isAr ? 'إنشاء (CREATE)' : 'CREATE'}</option>
-              <option value="UPDATE">{isAr ? 'تعديل (UPDATE)' : 'UPDATE'}</option>
-              <option value="DELETE">{isAr ? 'حذف (DELETE)' : 'DELETE'}</option>
-              <option value="APPROVE">{isAr ? 'اعتماد (APPROVE)' : 'APPROVE'}</option>
-              <option value="REJECT">{isAr ? 'رفض (REJECT)' : 'REJECT'}</option>
-              <option value="CANCEL">{isAr ? 'إلغاء (CANCEL)' : 'CANCEL'}</option>
-              <option value="ARCHIVE">{isAr ? 'أرشفة (ARCHIVE)' : 'ARCHIVE'}</option>
-              <option value="RESTORE">{isAr ? 'استعادة (RESTORE)' : 'RESTORE'}</option>
-              <option value="LOGIN">{isAr ? 'تسجيل دخول (LOGIN)' : 'LOGIN'}</option>
-              <option value="LOGOUT">{isAr ? 'تسجيل خروج (LOGOUT)' : 'LOGOUT'}</option>
+              <option value="CREATE">{isAr ? 'إنشاء' : 'CREATE'}</option>
+              <option value="UPDATE">{isAr ? 'تعديل' : 'UPDATE'}</option>
+              <option value="DELETE">{isAr ? 'حذف' : 'DELETE'}</option>
+              <option value="APPROVE">{isAr ? 'اعتماد' : 'APPROVE'}</option>
+              <option value="CANCEL">{isAr ? 'إلغاء' : 'CANCEL'}</option>
+              <option value="LOGIN">{isAr ? 'دخول' : 'LOGIN'}</option>
+              <option value="LOGOUT">{isAr ? 'خروج' : 'LOGOUT'}</option>
               <option value="ISSUE_INVOICE">{isAr ? 'إصدار فاتورة' : 'ISSUE_INVOICE'}</option>
-              <option value="ISSUE_STATEMENT">{isAr ? 'إصدار مستخلص' : 'ISSUE_STATEMENT'}</option>
               <option value="PAYMENT_RECORD">{isAr ? 'تسجيل دفعة' : 'PAYMENT_RECORD'}</option>
-              <option value="AUDIT_EXPORT">{isAr ? 'تصدير سجل التدقيق' : 'AUDIT_EXPORT'}</option>
-              <option value="RETENTION_CLEANUP">{isAr ? 'تنظيف دوري للسجلات' : 'RETENTION_CLEANUP'}</option>
+              <option value="ISSUE_STATEMENT">{isAr ? 'إصدار مستخلص' : 'ISSUE_STATEMENT'}</option>
             </select>
           </div>
 
-          {/* Entity Type Filter */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'الكيان المتأثر' : 'Entity'}
-            </label>
-            <select
-              value={entityType}
-              onChange={(e) => {
-                setEntityType(e.target.value)
-                setPage(1)
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          {/* Advanced Filters Toggle & Reset */}
+          <div className="lg:col-span-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsAdvancedFiltersOpen(!isAdvancedFiltersOpen)}
+              className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                isAdvancedFiltersOpen || dateFrom || dateTo || entityType || actorUserId || eligibility
+                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                  : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-300'
+              }`}
             >
-              <option value="">{isAr ? 'جميع الكيانات' : 'All Entities'}</option>
-              <option value="Invoice">{isAr ? 'الفواتير (Invoice)' : 'Invoice'}</option>
-              <option value="Payment">{isAr ? 'الدفعات (Payment)' : 'Payment'}</option>
-              <option value="Statement">{isAr ? 'المستخلصات (Statement)' : 'Statement'}</option>
-              <option value="Client">{isAr ? 'العملاء (Client)' : 'Client'}</option>
-              <option value="Site">{isAr ? 'المشاريع والمواقع (Site)' : 'Site'}</option>
-              <option value="WorkEntry">{isAr ? 'الأعمال المنفذة (WorkEntry)' : 'WorkEntry'}</option>
-              <option value="WorkItemTemplate">{isAr ? 'مكتبة البنود' : 'WorkItemTemplate'}</option>
-              <option value="User">{isAr ? 'المستخدمين (User)' : 'User'}</option>
-              <option value="OrgSettings">{isAr ? 'إعدادات المؤسسة' : 'OrgSettings'}</option>
-              <option value="AuditLog">{isAr ? 'سجلات النظام' : 'AuditLog'}</option>
-            </select>
-          </div>
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span>{isAr ? 'فلاتر متقدمة' : 'Advanced Filters'}</span>
+              {isAdvancedFiltersOpen ? (
+                <ChevronUp className="w-3 h-3" />
+              ) : (
+                <ChevronDown className="w-3 h-3" />
+              )}
+            </button>
 
-          {/* Actor User Filter */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'المستخدم المنفذ' : 'Actor User'}
-            </label>
-            <select
-              value={actorUserId}
-              onChange={(e) => {
-                setActorUserId(e.target.value)
-                setPage(1)
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">{isAr ? 'جميع المستخدمين' : 'All Users'}</option>
-              {actorsData?.map((actor: any) => (
-                <option key={actor.id} value={actor.id}>
-                  {actor.nameAr || actor.nameEn || actor.email} ({actor.role})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Date From */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'من تاريخ' : 'Date From'}
-            </label>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => {
-                setDateFrom(e.target.value)
-                setPage(1)
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          {/* Date To */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'إلى تاريخ' : 'Date To'}
-            </label>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => {
-                setDateTo(e.target.value)
-                setPage(1)
-              }}
-              className="w-full px-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          {/* Search Query */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              {isAr ? 'بحث بالوصف أو المعرف' : 'Search Keyword'}
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                placeholder={isAr ? 'ابحث في التفاصيل...' : 'Search details...'}
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setPage(1)
-                }}
-                className="w-full pe-8 ps-3 py-2 rounded-xl border border-gray-300 text-xs bg-gray-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <Search className="w-3.5 h-3.5 text-gray-400 absolute end-2.5 top-2.5 pointer-events-none" />
-            </div>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="inline-flex items-center gap-1 px-3 py-2 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 text-gray-600 hover:text-gray-900 text-xs font-medium transition-colors"
+                title={isAr ? 'مسح الفلاتر' : 'Clear Filters'}
+              >
+                <X className="w-3.5 h-3.5 text-gray-400" />
+                <span className="hidden sm:inline">{isAr ? 'مسح' : 'Clear'}</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Reset Filter Button */}
+        {/* Collapsible Advanced Filters Section */}
+        {isAdvancedFiltersOpen && (
+          <div className="pt-3 border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            {/* Date From */}
+            <div>
+              <label className="block text-[11px] font-medium text-gray-500 mb-1">
+                {isAr ? 'من تاريخ' : 'From Date'}
+              </label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => {
+                  setDateFrom(e.target.value)
+                  setPage(1)
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Date To */}
+            <div>
+              <label className="block text-[11px] font-medium text-gray-500 mb-1">
+                {isAr ? 'إلى تاريخ' : 'To Date'}
+              </label>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => {
+                  setDateTo(e.target.value)
+                  setPage(1)
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Entity Type */}
+            <div>
+              <label className="block text-[11px] font-medium text-gray-500 mb-1">
+                {isAr ? 'الكيان المتأثر' : 'Affected Entity'}
+              </label>
+              <select
+                value={entityType}
+                onChange={(e) => {
+                  setEntityType(e.target.value)
+                  setPage(1)
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">{isAr ? 'جميع الكيانات' : 'All Entities'}</option>
+                <option value="Invoice">{isAr ? 'فاتورة (Invoice)' : 'Invoice'}</option>
+                <option value="Payment">{isAr ? 'دفعة (Payment)' : 'Payment'}</option>
+                <option value="Statement">{isAr ? 'مستخلص (Statement)' : 'Statement'}</option>
+                <option value="Client">{isAr ? 'عميل (Client)' : 'Client'}</option>
+                <option value="Site">{isAr ? 'موقع / مشروع (Site)' : 'Site'}</option>
+                <option value="WorkEntry">{isAr ? 'سجل أعمال (WorkEntry)' : 'WorkEntry'}</option>
+                <option value="User">{isAr ? 'مستخدم (User)' : 'User'}</option>
+                <option value="AuditLog">{isAr ? 'سجل نظام (AuditLog)' : 'AuditLog'}</option>
+              </select>
+            </div>
+
+            {/* Actor User */}
+            <div>
+              <label className="block text-[11px] font-medium text-gray-500 mb-1">
+                {isAr ? 'المستخدم المنفذ' : 'Actor User'}
+              </label>
+              <select
+                value={actorUserId}
+                onChange={(e) => {
+                  setActorUserId(e.target.value)
+                  setPage(1)
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">{isAr ? 'جميع المستخدمين' : 'All Users'}</option>
+                {actorsData?.map((actor: any) => (
+                  <option key={actor.id} value={actor.id}>
+                    {actor.nameAr || actor.nameEn || actor.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Active Filters Summary */}
         {hasActiveFilters && (
-          <div className="flex items-center justify-between pt-2 border-t border-gray-100 text-xs">
-            <span className="text-gray-500">
+          <div className="flex items-center justify-between text-xs text-gray-500 pt-1">
+            <span>
               {isAr
-                ? `مرشحات نشطة مطبقة (النتائج: ${pagination.total})`
-                : `Active filters applied (Matches: ${pagination.total})`}
+                ? `النتائج المطابقة: ${pagination.total} سجل`
+                : `Matches found: ${pagination.total} records`}
             </span>
             <button
               type="button"
               onClick={handleResetFilters}
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold transition-colors"
+              className="text-blue-600 hover:text-blue-800 font-semibold"
             >
-              <X className="w-3.5 h-3.5" />
-              <span>{isAr ? 'إلغاء جميع المرشحات' : 'Clear Filters'}</span>
+              {isAr ? 'مسح الفلاتر' : 'Clear Filters'}
             </button>
           </div>
         )}
       </div>
 
       {/* =========================================================
-          4. Audit Logs Data Table
+          Area 4: Audit Records Table
           ========================================================= */}
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-2xs overflow-hidden" data-testid="audit-table-card">
         {isLoading ? (
-          <div className="p-16 text-center text-gray-500 space-y-3">
-            <RefreshCw className="w-8 h-8 text-blue-600 animate-spin mx-auto" />
-            <p className="font-medium text-sm">
-              {isAr ? 'جاري تحميل سجل التدقيق...' : 'Loading audit trail records...'}
+          <div className="p-12 text-center text-gray-500 space-y-2">
+            <RefreshCw className="w-6 h-6 text-blue-600 animate-spin mx-auto" />
+            <p className="text-xs font-medium">
+              {isAr ? 'جاري تحميل السجلات...' : 'Loading audit records...'}
             </p>
           </div>
         ) : logs.length === 0 ? (
-          <div className="p-16 text-center text-gray-500 space-y-3">
-            <ShieldCheck className="w-12 h-12 text-gray-300 mx-auto" />
-            <p className="text-base font-bold text-gray-800">
-              {isAr ? 'لا توجد سجلات تدقيق مطابقة' : 'No audit records found'}
+          <div className="p-12 text-center text-gray-500 space-y-2">
+            <ShieldCheck className="w-10 h-10 text-gray-300 mx-auto" />
+            <p className="text-sm font-semibold text-gray-800">
+              {isAr ? 'لا توجد سجلات تدقيق' : 'No audit records found'}
             </p>
-            <p className="text-xs text-gray-400 max-w-sm mx-auto">
+            <p className="text-xs text-gray-400">
               {hasActiveFilters
                 ? isAr
-                  ? 'لا توجد نتائج تطابق معايير التصفية الحالية. حاول تغيير الفلاتر أو إعادة ضبطها.'
-                  : 'No entries match current filter criteria. Try resetting filters.'
+                  ? 'لا توجد نتائج تطابق معايير التصفية المحددة.'
+                  : 'No entries match your search criteria.'
                 : isAr
-                ? 'لم يتم تسجيل أي عمليات حتى الآن في المؤسسة.'
-                : 'No activities have been recorded yet.'}
+                ? 'سجل التدقيق فارغ حالياً.'
+                : 'The audit log is currently clean.'}
             </p>
             {hasActiveFilters && (
               <button
                 type="button"
                 onClick={handleResetFilters}
-                className="mt-2 inline-flex items-center gap-1 px-3.5 py-1.5 rounded-xl bg-blue-50 text-blue-700 font-semibold text-xs hover:bg-blue-100"
+                className="mt-2 text-xs font-semibold text-blue-600 hover:text-blue-800"
               >
-                {isAr ? 'إعادة ضبط المرشحات' : 'Reset Filters'}
+                {isAr ? 'مسح الفلاتر والبدء من جديد' : 'Clear filters'}
               </button>
             )}
           </div>
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs text-start">
-                <thead className="bg-[#F8FAFC] text-gray-600 border-b border-gray-200">
+              <table className="w-full min-w-[700px] print:min-w-0 text-xs text-start">
+                <thead className="bg-gray-50 text-gray-500 border-b border-gray-200">
                   <tr>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
-                      {isAr ? 'التاريخ والوقت' : 'Timestamp'}
+                    <th className="px-4 py-3 text-start font-semibold">
+                      {isAr ? 'التاريخ والوقت' : 'Date & Time'}
                     </th>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
-                      {isAr ? 'التصنيف' : 'Category'}
+                    <th className="px-4 py-3 text-start font-semibold">
+                      {isAr ? 'المستخدم' : 'User'}
                     </th>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
+                    <th className="px-4 py-3 text-start font-semibold">
                       {isAr ? 'العملية' : 'Action'}
                     </th>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
-                      {isAr ? 'المستخدم (المنفذ)' : 'Actor User'}
+                    <th className="px-4 py-3 text-start font-semibold">
+                      {isAr ? 'السجل المرتبط' : 'Affected Record'}
                     </th>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
-                      {isAr ? 'الكيان المتأثر' : 'Entity'}
+                    <th className="px-4 py-3 text-start font-semibold">
+                      {isAr ? 'التفاصيل' : 'Description'}
                     </th>
-                    <th className="px-4 py-3.5 text-start font-bold uppercase tracking-wider text-[11px]">
-                      {isAr ? 'تفاصيل السجل' : 'Details / Reason'}
+                    <th className="px-4 py-3 text-end font-semibold">
+                      {isAr ? 'الإجراءات' : 'Actions'}
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {logs.map((log: any) => (
-                    <tr key={log.id} className="hover:bg-gray-50/70 transition-colors">
-                      {/* Timestamp */}
-                      <td className="px-4 py-3 whitespace-nowrap text-gray-600 font-mono">
-                        <div className="flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                          <span>{new Date(log.createdAt).toLocaleString()}</span>
-                        </div>
-                      </td>
+                  {logs.map((log) => {
+                    const userName =
+                      log.user?.nameAr ||
+                      log.user?.nameEn ||
+                      log.user?.email ||
+                      (isAr ? 'النظام' : 'System')
+                    const userInitial = userName.charAt(0).toUpperCase()
+                    const actionLabel = getActionLabel(log.action, log.entityType, isAr)
+                    const entityLabel = getEntityLabel(log.entityType, isAr)
+                    const badgeStyle = getActionBadgeStyle(log.action)
+                    const refInfo = formatAuditReference(log, isAr)
+                    const displayDesc = formatAuditDescription(log, isAr)
 
-                      {/* Category Badge */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        {renderCategoryBadge(log.category)}
-                      </td>
-
-                      {/* Action Badge */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        {renderActionBadge(log.action)}
-                      </td>
-
-                      {/* Actor User */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 font-bold shrink-0">
-                            {log.user?.nameAr?.charAt(0) ||
-                              log.user?.email?.charAt(0).toUpperCase() ||
-                              '?'}
-                          </div>
-                          <div>
-                            <span className="font-semibold text-gray-900 block leading-tight">
-                              {log.user?.nameAr || log.user?.nameEn || log.user?.email || '-'}
+                    return (
+                      <tr key={log.id} className="hover:bg-gray-50/60 transition-colors">
+                        {/* Timestamp */}
+                        <td className="px-4 py-3 whitespace-nowrap text-gray-600 font-mono">
+                          <div className="flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            <span>
+                              {new Date(log.createdAt).toLocaleString(
+                                isAr ? 'ar-SA' : 'en-US',
+                                {
+                                  dateStyle: 'short',
+                                  timeStyle: 'short',
+                                }
+                              )}
                             </span>
-                            {log.user?.email && (
-                              <span className="text-[10px] text-gray-400 block font-mono">
-                                {log.user.email}
-                              </span>
-                            )}
                           </div>
-                        </div>
-                      </td>
+                        </td>
 
-                      {/* Entity */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="font-semibold text-gray-800 font-mono">
-                          {log.entityType}
-                        </span>
-                        {log.entityId && (
+                        {/* User */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-gray-100 text-gray-700 font-bold flex items-center justify-center text-[10px] shrink-0">
+                              {userInitial}
+                            </div>
+                            <span className="font-medium text-gray-800">
+                              {userName}
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* Action */}
+                        <td className="px-4 py-3 whitespace-nowrap">
                           <span
-                            className="block text-[10px] text-gray-400 font-mono truncate max-w-[120px]"
-                            title={log.entityId}
+                            className={`px-2.5 py-1 rounded-md text-[11px] font-bold border ${badgeStyle.bg} ${badgeStyle.text} ${badgeStyle.border}`}
                           >
-                            #{log.entityId.slice(0, 8)}...
+                            {actionLabel}
                           </span>
-                        )}
-                      </td>
+                        </td>
 
-                      {/* Details / Payload summary */}
-                      <td className="px-4 py-3 text-gray-600 max-w-xs break-words">
-                        {log.details ? (
-                          typeof log.details === 'object' ? (
-                            <span className="font-mono text-[11px] bg-gray-50 px-2 py-0.5 rounded border border-gray-100 block truncate">
-                              {JSON.stringify(log.details)}
-                            </span>
-                          ) : (
-                            <span>{String(log.details)}</span>
-                          )
-                        ) : log.description ? (
-                          <span>{log.description}</span>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                        {/* Affected Record */}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-gray-800">
+                                {entityLabel}
+                              </span>
+                              {refInfo.isDeleted && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                                  {isAr ? 'سجل محذوف' : 'Deleted'}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <span className="text-[11px] font-mono text-blue-700 font-medium">
+                                {refInfo.primary}
+                              </span>
+                              {refInfo.secondary && (
+                                <span
+                                  className="text-[10px] font-mono text-gray-400 truncate max-w-[120px]"
+                                  title={log.entityId}
+                                >
+                                  ({refInfo.secondary})
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Details (Short) */}
+                        <td className="px-4 py-3 text-gray-600 max-w-sm truncate" title={displayDesc}>
+                          {displayDesc}
+                        </td>
+
+                        {/* Actions Column */}
+                        <td className="px-4 py-3 text-end whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {refInfo.url && (
+                              <RecordLink
+                                to={refInfo.url}
+                                title={isAr ? `انتقال إلى ${entityLabel}` : `View ${entityLabel} Record`}
+                                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold text-gray-600 hover:text-blue-700 hover:bg-blue-50 transition-colors"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                <span className="hidden md:inline">{isAr ? 'السجل' : 'Record'}</span>
+                              </RecordLink>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedRecord(log)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>{isAr ? 'عرض التفاصيل' : 'View Details'}</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
 
-            {/* Pagination footer */}
-            <div className="px-4 py-3.5 border-t border-gray-200 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-600">
-              <span className="font-semibold">
+            {/* Compact Pagination */}
+            <div className="px-4 py-3 border-t border-gray-100 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-500">
+              <span>
                 {isAr
-                  ? `إجمالي السجلات: ${pagination.total} (صفحة ${pagination.page} من ${pagination.totalPages})`
-                  : `Total Records: ${pagination.total} (Page ${pagination.page} of ${pagination.totalPages})`}
+                  ? `صفحة ${pagination.page} من ${pagination.totalPages} (${pagination.total} سجل)`
+                  : `Page ${pagination.page} of ${pagination.totalPages} (${pagination.total} records)`}
               </span>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   disabled={page <= 1}
                   onClick={() => setPage((p) => p - 1)}
-                  className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white font-semibold shadow-2xs hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  className="px-2.5 py-1 rounded border border-gray-300 bg-white font-medium hover:bg-gray-50 disabled:opacity-40 transition-colors"
                 >
                   {isAr ? 'السابق' : 'Previous'}
                 </button>
-                <span className="px-3 py-1 font-mono font-bold bg-white rounded-lg border border-gray-200">
-                  {page} / {pagination.totalPages}
-                </span>
+                <span className="px-2 font-mono text-gray-700">{page}</span>
                 <button
                   type="button"
                   disabled={page >= pagination.totalPages}
                   onClick={() => setPage((p) => p + 1)}
-                  className="px-3 py-1.5 rounded-lg border border-gray-300 bg-white font-semibold shadow-2xs hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  className="px-2.5 py-1 rounded border border-gray-300 bg-white font-medium hover:bg-gray-50 disabled:opacity-40 transition-colors"
                 >
                   {isAr ? 'التالي' : 'Next'}
                 </button>
@@ -790,325 +957,466 @@ export function AuditLogsPage() {
       </div>
 
       {/* =========================================================
-          5. Retention & Safe Cleanup Modal (2-Step Safety Workflow)
+          Detailed View Modal (Human-Readable Business Presentation)
           ========================================================= */}
-      {isRetentionModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col max-h-[90vh]">
+      <AuditDetailModal
+        record={selectedRecord}
+        isOpen={!!selectedRecord}
+        onClose={() => setSelectedRecord(null)}
+        isAr={isAr}
+        isAdmin={isAdmin}
+      />
+
+      {/* =========================================================
+          Direct Clear Audit Log Confirmation Modal
+          ========================================================= */}
+      {isClearModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-2xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col animate-in fade-in-50 duration-150">
             {/* Modal Header */}
-            <div className="px-6 py-4 bg-[#18324B] text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <ShieldAlert className="w-6 h-6 text-[#E29A26]" />
+            <div className="px-6 py-4 bg-rose-50/80 border-b border-rose-100 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </div>
                 <div>
-                  <h3 className="text-lg font-bold">
-                    {isAr
-                      ? 'سياسة حفظ السجلات والتنظيف الآمن'
-                      : 'Audit Log Retention & Controlled Cleanup'}
+                  <h3 className="text-sm font-bold text-gray-900">
+                    {isAr ? 'تفريغ سجل التدقيق' : 'Clear Audit Log'}
                   </h3>
-                  <p className="text-xs text-gray-300">
-                    {isAr
-                      ? 'إدارة دورة حياة السجلات مع ضمان الحماية القانونية للسجلات الضريبية والمالية'
-                      : 'Manage lifecycle retention with strict preservation of tax & financial logs'}
+                  <p className="text-[11px] text-gray-500">
+                    {isAr ? 'حذف السجلات التشغيلية والتاريخية نهائياً' : 'Permanently remove audit records'}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsRetentionModalOpen(false)}
-                className="text-gray-300 hover:text-white p-1 rounded-lg"
+                onClick={() => setIsClearModalOpen(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-700 rounded-lg"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Modal Body */}
-            <div className="p-6 overflow-y-auto space-y-5 text-sm">
-              {/* Important ZATCA & Legal Safeguard Notice */}
-              <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 space-y-1.5">
-                <div className="flex items-center gap-2 font-bold text-amber-950">
-                  <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0" />
+            {/* Modal Content */}
+            <div className="p-6 space-y-4 text-xs text-gray-700">
+              <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-500">{isAr ? 'إجمالي السجلات الحالية:' : 'Total Records in Log:'}</span>
+                  <span className="font-bold font-mono text-gray-900 text-sm">
+                    {statsData?.totalRecords ?? pagination.total ?? 0}
+                  </span>
+                </div>
+                {Number(statsData?.protectedCount ?? 0) > 0 && (
+                  <div className="flex items-center justify-between border-t border-gray-200 pt-1.5">
+                    <span className="text-emerald-700 font-medium">{isAr ? 'سجلات مالية وضريبية محمية:' : 'Statutory Records Preserved:'}</span>
+                    <span className="font-bold font-mono text-emerald-800">
+                      {statsData?.protectedCount}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between border-t border-gray-200 pt-1.5">
+                  <span className="text-rose-700 font-medium">{isAr ? 'السجلات التاريخية المؤهلة للحذف:' : 'Eligible Historical Records:'}</span>
+                  <span className="font-bold font-mono text-rose-800">
+                    {Math.max(0, (statsData?.totalRecords ?? 0) - (statsData?.protectedCount ?? 0))}
+                  </span>
+                </div>
+              </div>
+
+              <p className="leading-relaxed text-gray-600">
+                {isAr
+                  ? 'سيؤدي هذا الإجراء إلى حذف سجلات التدقيق والعمليات التشغيلية (العملاء، المواقع، البنود، الأعمال المنفذة، العمليات التجريبية) نهائياً من قاعدة البيانات.'
+                  : 'This action will permanently delete operational audit records (clients, sites, items, work entries, dev logs) from persistent storage.'}
+              </p>
+
+              {Number(statsData?.protectedCount ?? 0) > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-[11px] leading-relaxed flex items-start gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                   <span>
                     {isAr
-                      ? 'ضمان الحماية القانونية والضريبية (ZATCA / هيئة الزكاة)'
-                      : 'Legal & Tax Retention Safeguard (ZATCA)'}
+                      ? 'حماية نظامية: سيتم الحفاظ التلقائي على السجلات المالية والضريبية (الفواتير، سندات الدفع، المستخلصات) للامتثال لمتطلبات هيئة الزكاة والضريبة والجمارك (ZATCA).'
+                      : 'Statutory Safeguard: Tax invoices, payments, and progress statements are strictly preserved under ZATCA and commercial accounting regulations.'}
                   </span>
                 </div>
-                <p className="text-xs leading-relaxed text-amber-800">
+              )}
+
+              <div className="pt-2 border-t border-gray-100">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="confirm-clear-checkbox"
+                    checked={isConfirmChecked}
+                    onChange={(e) => setIsConfirmChecked(e.target.checked)}
+                    className="mt-0.5 rounded border-gray-300 text-rose-600 focus:ring-rose-500 w-4 h-4"
+                  />
+                  <span className="font-semibold text-gray-800 leading-snug">
+                    {isAr
+                      ? 'أؤكد رغبتي في تفريغ سجل التدقيق نهائياً وحذف السجلات المحددة.'
+                      : 'I explicitly confirm clearing the audit log and permanently deleting the targeted records.'}
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="px-6 py-3.5 bg-gray-50 border-t border-gray-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsClearModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-gray-300 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 transition-colors"
+              >
+                {isAr ? 'إلغاء' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                data-testid="execute-clear-audit-log-btn"
+                disabled={!isConfirmChecked || clearAuditLogMutation.isPending}
+                onClick={() => clearAuditLogMutation.mutate({ confirmed: true })}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>
+                  {clearAuditLogMutation.isPending
+                    ? (isAr ? 'جارٍ التفريغ...' : 'Clearing...')
+                    : (isAr ? 'تأكيد تفريغ السجل' : 'Confirm Clear')}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================
+          Simplified Retention & Cleanup Management Modal
+          ========================================================= */}
+      {isCleanupModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-2xs flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg rounded-xl shadow-xl border border-gray-200 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-5 py-4 bg-gray-900 text-white flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold">
+                  {isAr ? 'إدارة الاحتفاظ بالسجلات' : 'Manage Log Retention'}
+                </h3>
+                <p className="text-[11px] text-gray-300 mt-0.5">
                   {isAr
-                    ? 'بموجب أنظمة الفوترة الإلكترونية السعودية (ZATCA) والمعايير المحاسبية، فإن جميع السجلات المتعلقة بالفواتير (Invoice)، الدفعات (Payment)، والمستخلصات (Statement) محمية تماماً وغير قابلة للحذف بأي شكل، وسيتم استثناؤها تلقائياً وحفظها دائماً.'
-                    : 'Per Saudi ZATCA e-invoicing and accounting retention mandates, all financial records (Invoices, Payments, Statements) are strictly protected and permanently preserved. They cannot be purged.'}
+                    ? 'سياسات الاحتفاظ بالسجلات مع حماية السجلات المالية والضريبية'
+                    : 'Retention policies with statutory preservation'}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => setIsCleanupModalOpen(false)}
+                className="text-gray-400 hover:text-white p-1 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-              {/* Step 1: Retention Period Selector */}
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
-                  {isAr ? '1. حدد فترة الحفظ (حذف السجلات الأقدم من)' : '1. Select Retention Period'}
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  {[30, 60, 90, 180, 365].map((days) => (
-                    <button
-                      key={days}
-                      type="button"
-                      onClick={() => setRetentionDays(days)}
-                      className={`px-3 py-2 rounded-xl text-xs font-bold border transition-all ${
-                        retentionDays === days
-                          ? 'bg-[#18324B] text-white border-[#18324B] shadow-2xs'
-                          : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                      }`}
-                    >
-                      {isAr ? `${days} يوم` : `${days} days`}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* Modal Tabs */}
+            <div className="flex border-b border-gray-200 bg-gray-50 px-5 pt-2 text-xs">
+              <button
+                type="button"
+                data-testid="tab-retention-cleanup"
+                onClick={() => {
+                  setActiveCleanupTab('RETENTION')
+                  setOperationFeedback(null)
+                }}
+                className={`pb-2.5 px-3 font-semibold border-b-2 transition-colors ${
+                  activeCleanupTab === 'RETENTION'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                {isAr ? 'سياسة الاحتفاظ بالسجلات' : 'Retention Policy'}
+              </button>
 
-              {/* Step 2: Live Preview Calculation */}
-              <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-gray-700">
-                    {isAr ? '2. نتائج تحليل الحفظ المؤهلة للتنظيف' : '2. Retention Impact Preview'}
-                  </span>
-                  {isPreviewLoading && (
-                    <span className="text-blue-600 flex items-center gap-1">
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                      {isAr ? 'جاري التحليل...' : 'Calculating...'}
-                    </span>
+              {statsData?.isDevelopment && (
+                <button
+                  type="button"
+                  data-testid="tab-clear-dev-logs"
+                  onClick={() => {
+                    setActiveCleanupTab('CLEAR_DEV')
+                    setOperationFeedback(null)
+                  }}
+                  className={`pb-2.5 px-3 font-semibold border-b-2 transition-colors flex items-center gap-1.5 ${
+                    activeCleanupTab === 'CLEAR_DEV'
+                      ? 'border-purple-600 text-purple-700'
+                      : 'border-transparent text-purple-700/70 hover:text-purple-900'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                  <span>{isAr ? 'تفريغ سجلات الاختبار (تطوير)' : 'Clear Test Logs (Dev)'}</span>
+                </button>
+              )}
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              {operationFeedback && (
+                <div
+                  className={`p-3 rounded-lg border flex items-center gap-2 text-xs ${
+                    operationFeedback.type === 'success'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      : 'bg-rose-50 border-rose-200 text-rose-800'
+                  }`}
+                >
+                  {operationFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
                   )}
+                  <span>{operationFeedback.message}</span>
                 </div>
+              )}
 
-                {previewData && (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-3 gap-3 text-center">
-                      <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-2xs">
-                        <span className="text-[11px] text-gray-500 block">
-                          {isAr ? 'إجمالي السجلات' : 'Total Records'}
-                        </span>
-                        <span className="text-base font-extrabold text-gray-900 font-mono">
-                          {previewData.systemTotalRecords ??
-                            previewData.totalRecords ??
-                            ((previewData.totalEligibleCount ?? 0) +
-                              (previewData.protectedCount ?? 0))}
-                        </span>
-                      </div>
-
-                      <div className="bg-white p-3 rounded-lg border border-emerald-200 shadow-2xs">
-                        <span className="text-[11px] text-emerald-700 font-semibold block">
-                          {isAr ? 'السجلات المحمية (لا تُحذف)' : 'Protected (Retained)'}
-                        </span>
-                        <span className="text-base font-extrabold text-emerald-800 font-mono">
-                          {previewData.protectedRecords ?? previewData.protectedCount ?? 0}
-                        </span>
-                      </div>
-
-                      <div className="bg-white p-3 rounded-lg border border-rose-200 shadow-2xs">
-                        <span className="text-[11px] text-rose-700 font-semibold block">
-                          {isAr ? 'المؤهلة للتنظيف' : 'Eligible to Purge'}
-                        </span>
-                        <span className="text-base font-extrabold text-rose-800 font-mono">
-                          {previewData.eligibleRecords ?? previewData.totalEligibleCount ?? 0}
-                        </span>
-                      </div>
+              {/* ── TAB 1: RETENTION POLICY ── */}
+              {activeCleanupTab === 'RETENTION' && (
+                <div className="space-y-4">
+                  {/* Period Selector */}
+                  <div>
+                    <label className="block font-semibold text-gray-700 mb-1.5">
+                      {isAr ? 'فترة الاحتفاظ بالسجلات:' : 'Retention Period:'}
+                    </label>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {[30, 60, 90, 180, 365].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setRetentionDays(d)}
+                          className={`py-1.5 rounded-lg font-mono font-medium border text-xs text-center transition-colors ${
+                            retentionDays === d
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          {d} {isAr ? 'يوم' : 'd'}
+                        </button>
+                      ))}
                     </div>
+                  </div>
 
-                    {(previewData.eligibleRecords ?? previewData.totalEligibleCount ?? 0) === 0 && (
-                      <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1">
-                        <div className="flex items-center gap-2 font-semibold">
-                          <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
-                          <span>
-                            {isAr ? 'لا توجد سجلات مؤهلة للحذف' : 'No Records Eligible for Purge'}
-                          </span>
-                        </div>
-                        <p className="text-[11px] leading-relaxed text-blue-800">
-                          {isAr
-                            ? (previewData.explanationReason ||
-                              'جميع سجلات النظام الحالية أُنشئت حديثاً وهي أحدث من تاريخ الفرز ومحمية ضمن فترة الامتثال.')
-                            : (previewData.explanationReasonEn ||
-                              'All current system records were created recently and are newer than the cutoff date or protected.')}
+                  {/* Preview Metrics */}
+                  <div className="grid grid-cols-3 gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200 text-center">
+                    <div>
+                      <span className="text-[10px] text-gray-500 block">
+                        {isAr ? 'إجمالي السجلات' : 'Total'}
+                      </span>
+                      <span className="text-base font-bold text-gray-900 font-mono">
+                        {previewData?.systemTotalRecords ?? statsData?.totalRecords ?? 0}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-emerald-700 block font-medium">
+                        {isAr ? 'محمية نظامياً' : 'Protected'}
+                      </span>
+                      <span className="text-base font-bold text-emerald-800 font-mono">
+                        {previewData?.protectedCount ?? statsData?.protectedCount ?? 0}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-rose-700 block font-medium">
+                        {isAr ? 'مؤهلة للحذف' : 'Eligible'}
+                      </span>
+                      <span className="text-base font-bold text-rose-800 font-mono">
+                        {previewData?.totalEligibleCount ?? 0}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Informative Note When Eligible === 0 */}
+                  {previewData && (previewData.totalEligibleCount ?? 0) === 0 && (
+                    <div className="p-3 bg-amber-50/80 rounded-lg border border-amber-200 text-amber-900 text-[11px] leading-relaxed">
+                      <div className="flex items-center gap-1.5 font-semibold text-amber-950 mb-1">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>{isAr ? 'لا توجد سجلات منتهية للحذف' : '0 records qualify for retention deletion'}</span>
+                      </div>
+                      <p>
+                        {isAr
+                          ? `جميع سجلات التدقيق في النظام أُنشئت حديثاً بعد تاريخ الفرز وتخضع للحماية القانونية والتلقائية ضمن فترة الاحتفاظ المحددة (${retentionDays} يوماً).`
+                          : `All audit logs were created recently and are safely protected within the active ${retentionDays}-day retention policy.`}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Expandable Policy Explanation */}
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowPolicyDetails(!showPolicyDetails)}
+                      className="text-gray-500 hover:text-gray-800 flex items-center gap-1 text-[11px] font-medium"
+                    >
+                      <span>
+                        {isAr
+                          ? 'تفاصيل وضمانات الحماية القانونية (ZATCA)'
+                          : 'Statutory Protection Details (ZATCA)'}
+                      </span>
+                      {showPolicyDetails ? (
+                        <ChevronUp className="w-3 h-3" />
+                      ) : (
+                        <ChevronDown className="w-3 h-3" />
+                      )}
+                    </button>
+                    {showPolicyDetails && (
+                      <div className="mt-2 p-2.5 bg-gray-50 rounded-lg border border-gray-200 text-[11px] text-gray-600 space-y-1">
+                        <p>
+                          • {isAr ? 'الفواتير الضريبية: محمية بالكامل بموجب لوائح الفوترة الإلكترونية.' : 'Tax Invoices: Permanently preserved under ZATCA mandates.'}
+                        </p>
+                        <p>
+                          • {isAr ? 'سندات الدفع والتحصيل: محمية بموجب نظام الدفاتر التجارية والمعايير المحاسبية.' : 'Payments: Protected under commercial accounting laws.'}
+                        </p>
+                        <p>
+                          • {isAr ? 'مستخلصات الأعمال: مستندات تعاقدية ملزمة.' : 'Work Statements: Binding contractual milestone records.'}
                         </p>
                       </div>
                     )}
                   </div>
-                )}
 
-                {previewData?.cutoffDate && (
-                  <p className="text-[11px] text-gray-500">
-                    {isAr
-                      ? `تاريخ الفرز: السجلات التي أُنشئت قبل ${new Date(
-                          previewData.cutoffDate
-                        ).toLocaleDateString()}`
-                      : `Cutoff Date: records created before ${new Date(
-                          previewData.cutoffDate
-                        ).toLocaleDateString()}`}
-                  </p>
-                )}
-              </div>
+                  {/* Confirmation Section (Only active if eligible > 0) */}
+                  {(previewData?.totalEligibleCount ?? 0) > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-gray-100">
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={policyAcknowledged}
+                          onChange={(e) => setPolicyAcknowledged(e.target.checked)}
+                          className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-[11px] text-gray-600">
+                          {isAr
+                            ? 'أقر بحذف السجلات المؤهلة فقط وفق سياسة الاحتفاظ.'
+                            : 'I confirm deletion of eligible records under the retention policy.'}
+                        </span>
+                      </label>
 
-              {/* Step 3: Explicit Acknowledgment and Token Confirmation */}
-              <div className="space-y-3 pt-1">
-                <label className="flex items-start gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={policyAcknowledged}
-                    onChange={(e) => setPolicyAcknowledged(e.target.checked)}
-                    className="mt-0.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                  />
-                  <span className="text-xs text-gray-700 leading-snug">
-                    {isAr
-                      ? 'أقر بأنني اطلعت على سياسة حفظ السجلات، وأفهم أن هذا الإجراء سيقوم بحذف السجلات الإدارية المؤهلة فقط مع الحفاظ الكامل على السجلات المالية والضريبية، وتوثيق هذا الإجراء في سجل التدقيق.'
-                      : 'I acknowledge that I reviewed the retention policy. Only non-financial eligible logs will be purged, and this operation will be immutably recorded in the audit trail.'}
-                  </span>
-                </label>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">
-                    {isAr
-                      ? 'للتأكيد، اكتب رمز التأكيد أدناه بالضبط:'
-                      : 'To confirm, type the confirmation token exactly:'}
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="CONFIRM_AUDIT_LOG_CLEANUP"
-                      value={confirmToken}
-                      onChange={(e) => setConfirmToken(e.target.value)}
-                      className="px-3.5 py-2 rounded-xl border border-gray-300 font-mono text-xs w-full bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-rose-500"
-                    />
-                    <span className="text-[11px] font-mono font-bold text-gray-500 shrink-0 bg-gray-100 px-2.5 py-2 rounded-xl border border-gray-200">
-                      CONFIRM_AUDIT_LOG_CLEANUP
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Result & Error Feedback */}
-              {cleanupResult && (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>
-                    {isAr
-                      ? `تم تنظيف ${cleanupResult.count} سجل مؤهل بنجاح في ${cleanupResult.date}. تم توثيق العملية في سجل التدقيق.`
-                      : `Successfully purged ${cleanupResult.count} eligible records at ${cleanupResult.date}. Operation documented in audit trail.`}
-                  </span>
-                </div>
-              )}
-
-              {cleanupError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                  <span>{cleanupError}</span>
-                </div>
-              )}
-
-              {/* Development Mode: Reset Test Audit Logs */}
-              {previewData?.isDevelopment && (
-                <div className="p-4 rounded-xl border border-dashed border-purple-300 bg-purple-50/50 space-y-3 pt-3">
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-600 text-white uppercase">
-                      {isAr ? 'بيئة التطوير والاختبار' : 'Development Only'}
-                    </span>
-                    <h4 className="text-xs font-bold text-purple-950">
-                      {isAr
-                        ? 'إعادة ضبط سجلات الفحص والتطوير (Reset Test Logs)'
-                        : 'Reset Test & Debug Audit Logs'}
-                    </h4>
-                  </div>
-                  <p className="text-[11px] leading-relaxed text-purple-900">
-                    {isAr
-                      ? 'يتيح هذا الخيار تنظيف السجلات الاختبارية المتراكمة (محاولات تسجيل الدخول، أرشفة السجلات التجريبية) مع الحفاظ التام والمطلق على كافة فواتير المشاريع، المستخلصات، قيود الأعمال، وسجلات التدقيق النظامية.'
-                      : 'Safely purges development test noise and login records while strictly preserving all invoices, payments, statements, work items, and statutory logs.'}
-                  </p>
-
-                  <div className="space-y-2">
-                    <label className="block text-[11px] font-bold text-purple-900">
-                      {isAr
-                        ? 'لتأكيد تفريغ سجلات الفحص، اكتب:'
-                        : 'To confirm test log reset, type:'}{' '}
-                      <code className="text-purple-700 bg-purple-100 px-1 py-0.5 rounded font-mono">
-                        RESET_TEST_AUDIT_LOGS
-                      </code>
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="RESET_TEST_AUDIT_LOGS"
-                        value={resetToken}
-                        onChange={(e) => setResetToken(e.target.value)}
-                        className="px-3 py-1.5 rounded-lg border border-purple-200 font-mono text-xs w-full bg-white outline-none focus:ring-2 focus:ring-purple-500"
-                      />
-                      <button
-                        type="button"
-                        data-testid="reset-test-logs-btn"
-                        disabled={resetToken.trim() !== 'RESET_TEST_AUDIT_LOGS' || resetMutation.isPending}
-                        onClick={() => resetMutation.mutate()}
-                        className="px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold disabled:opacity-40 whitespace-nowrap shadow-xs"
-                      >
-                        {resetMutation.isPending
-                          ? isAr
-                            ? 'جارٍ الضبط...'
-                            : 'Resetting...'
-                          : isAr
-                          ? 'إعادة ضبط سجلات الفحص'
-                          : 'Reset Test Logs'}
-                      </button>
+                      <div>
+                        <label className="block text-[11px] text-gray-600 mb-1">
+                          {isAr ? 'اكتب رمز التأكيد:' : 'Type confirmation token:'}{' '}
+                          <code className="font-mono font-bold text-rose-700 bg-gray-100 px-1 py-0.5 rounded">
+                            CONFIRM_AUDIT_LOG_CLEANUP
+                          </code>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="CONFIRM_AUDIT_LOG_CLEANUP"
+                          value={confirmToken}
+                          onChange={(e) => setConfirmToken(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded-lg border border-gray-300 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-rose-500"
+                        />
+                      </div>
                     </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── TAB 2: DEVELOPMENT & TEST CLEANUP ── */}
+              {activeCleanupTab === 'CLEAR_DEV' && (
+                <div className="space-y-3.5">
+                  <div className="p-3 bg-purple-50 rounded-lg border border-purple-200 text-purple-950 text-xs space-y-1">
+                    <span className="font-bold flex items-center gap-1.5 text-purple-900">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                      {isAr ? 'بيئة التطوير والاختبار نشطة' : 'Development Environment Active'}
+                    </span>
+                    <p className="text-[11px] text-purple-900/80 leading-relaxed">
+                      {isAr
+                        ? 'يتيح لك هذا الخيار تفريغ سجلات الفحص والاختبار (تسجيلات الدخول المتكررة، حركات المستخدمين التجريبية) مع الحفاظ التام على السجلات المالية والضريبية.'
+                        : 'Allows clearing non-statutory test logs while strictly preserving all statutory financial invoices, payments, and statements.'}
+                    </p>
                   </div>
 
-                  {resetResult && (
-                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span>
-                        {isAr
-                          ? `تم تنظيف ${resetResult.count} سجل اختباري بنجاح في ${resetResult.date}. تم توثيق الحدث كـ RESET_TEST_LOGS.`
-                          : `Successfully purged ${resetResult.count} test logs at ${resetResult.date}. Operation recorded in security audit trail.`}
+                  <div className="grid grid-cols-2 gap-2 text-center text-xs">
+                    <div className="p-2.5 bg-purple-50/50 rounded-lg border border-purple-200">
+                      <span className="text-[10px] text-purple-700 block">
+                        {isAr ? 'سجلات تجريبية للتفريغ' : 'Test Logs to Purge'}
+                      </span>
+                      <span className="text-xl font-bold text-purple-900 font-mono">
+                        {statsData?.eligibleDevTestCount ?? statsData?.eligibleTestDebugCount ?? 0}
                       </span>
                     </div>
-                  )}
-
-                  {resetError && (
-                    <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-center gap-2">
-                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                      <span>{resetError}</span>
+                    <div className="p-2.5 bg-emerald-50/50 rounded-lg border border-emerald-200">
+                      <span className="text-[10px] text-emerald-700 block">
+                        {isAr ? 'سجلات مالية محمية' : 'Statutory Financial Records'}
+                      </span>
+                      <span className="text-xl font-bold text-emerald-900 font-mono">
+                        {statsData?.financialRecords ?? 0}
+                      </span>
                     </div>
-                  )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[11px] text-gray-600">
+                      {isAr ? 'اكتب رمز التأكيد:' : 'Type confirmation token:'}{' '}
+                      <code className="font-mono font-bold text-purple-800 bg-purple-50 px-1 py-0.5 rounded">
+                        CONFIRM_CLEAR_DEV_LOGS
+                      </code>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="CONFIRM_CLEAR_DEV_LOGS"
+                      value={clearDevToken}
+                      onChange={(e) => setClearDevToken(e.target.value)}
+                      className="w-full px-2.5 py-1.5 rounded-lg border border-purple-200 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-purple-500"
+                    />
+                  </div>
                 </div>
               )}
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+            <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setIsRetentionModalOpen(false)}
-                className="px-4 py-2 rounded-xl border border-gray-300 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-100 transition-colors"
+                onClick={() => setIsCleanupModalOpen(false)}
+                className="px-3.5 py-1.5 rounded-lg border border-gray-300 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50"
               >
                 {isAr ? 'إغلاق' : 'Close'}
               </button>
 
-              <button
-                type="button"
-                data-testid="execute-cleanup-btn"
-                disabled={
-                  !policyAcknowledged ||
-                  confirmToken.trim() !== 'CONFIRM_AUDIT_LOG_CLEANUP' ||
-                  cleanupMutation.isPending ||
-                  (previewData &&
-                    (previewData.eligibleRecords ?? previewData.totalEligibleCount ?? 0) === 0)
-                }
-                onClick={() => cleanupMutation.mutate()}
-                className="inline-flex items-center gap-2 px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>
-                  {cleanupMutation.isPending
+              {activeCleanupTab === 'RETENTION' && (
+                <button
+                  type="button"
+                  data-testid="execute-cleanup-btn"
+                  disabled={
+                    !policyAcknowledged ||
+                    confirmToken.trim() !== 'CONFIRM_AUDIT_LOG_CLEANUP' ||
+                    retentionCleanupMutation.isPending ||
+                    (previewData?.totalEligibleCount ?? 0) === 0
+                  }
+                  onClick={() => retentionCleanupMutation.mutate()}
+                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {retentionCleanupMutation.isPending
                     ? isAr
-                      ? 'جاري التنظيف...'
-                      : 'Executing...'
+                      ? 'جارٍ الحذف...'
+                      : 'Purging...'
                     : isAr
-                    ? 'تنفيذ التنظيف الآمن'
-                    : 'Execute Safe Cleanup'}
-                </span>
-              </button>
+                    ? 'تنفيذ الحذف'
+                    : 'Execute Purge'}
+                </button>
+              )}
+
+              {activeCleanupTab === 'CLEAR_DEV' && (
+                <button
+                  type="button"
+                  data-testid="execute-clear-dev-btn"
+                  disabled={
+                    !['CONFIRM_CLEAR_DEV_LOGS', 'CLEAR_TEST_LOGS', 'RESET_TEST_AUDIT_LOGS'].includes(
+                      clearDevToken.trim().toUpperCase()
+                    ) ||
+                    clearDevLogsMutation.isPending ||
+                    (statsData?.eligibleDevTestCount ?? statsData?.eligibleTestDebugCount ?? 0) === 0
+                  }
+                  onClick={() => clearDevLogsMutation.mutate()}
+                  className="px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {clearDevLogsMutation.isPending
+                    ? isAr
+                      ? 'جارٍ التفريغ...'
+                      : 'Clearing...'
+                    : isAr
+                    ? 'تفريغ سجلات الاختبار الآن'
+                    : 'Clear Test Logs'}
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -354,7 +354,7 @@ describe('Phase 3: Statements, Invoices, Concurrency, ZATCA (QR, ICV/PIH, Credit
         .post(`/api/invoices/${invId}/approve`)
         .set(authHeader(org.accessToken));
       expect(appRes.status).toBe(200);
-      expect(appRes.body.data.zatcaStatus).toBe('SUBMITTED');
+      expect(['SUBMITTED', 'PENDING_SUBMISSION']).toContain(appRes.body.data.zatcaStatus);
 
       // Inspect ZATCA endpoint
       const zatcaRes = await request

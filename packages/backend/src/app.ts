@@ -7,6 +7,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { config } from './config';
 import { logger } from './utils/logger';
+import { prisma } from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import { notFound } from './middleware/notFound';
 
@@ -24,6 +25,7 @@ import dashboardRouter from './routes/dashboard';
 import reportRouter from './routes/reports';
 import auditLogRouter from './routes/auditLogs';
 import unitsRouter from './routes/units';
+import testDataRouter from './routes/testData';
 
 const app = express();
 
@@ -76,8 +78,26 @@ if (config.nodeEnv !== 'test') {
 app.use('/uploads', express.static(config.uploadDir));
 
 // ── Health check ───────────────────────────────────────────────
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get(['/health', '/api/health'], async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({
+      status: 'ok',
+      uptime: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      environment: config.nodeEnv,
+    });
+  } catch (err: any) {
+    logger.error('Health probe database check failed:', err);
+    res.status(503).json({
+      status: 'degraded',
+      uptime: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: config.isProd ? 'Database connectivity failure' : err.message,
+    });
+  }
 });
 
 // ── API Routes ─────────────────────────────────────────────────
@@ -94,6 +114,7 @@ app.use('/api/payments', paymentRouter);
 app.use('/api/reports', reportRouter);
 app.use('/api/audit-logs', auditLogRouter);
 app.use('/api/units', unitsRouter);
+app.use('/api/test-data', testDataRouter);
 
 // ── Error handling ─────────────────────────────────────────────
 app.use(notFound);

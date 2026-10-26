@@ -14,3 +14,31 @@ prisma/migrations/dev.db
 *.sqlite
 .pgdata*
 packages/backend/.pgdata*
+
+# Database backups, exports, and physical snapshots
+backups/
+**/backups/
+*.dump
+*.sql
+*.snapshot
+
+# Local uploads directories
+uploads/
+**/uploads/
+!uploads/.gitkeep
+!**/uploads/.gitkeep
+
+# Local investigation, scratch, and database maintenance scripts
+packages/backend/scripts/inspect-db-state.js
+packages/backend/scripts/create-comprehensive-backup.js
+packages/backend/scripts/create-verified-backup.js
+packages/backend/scripts/execute-dataset-reduction.js
+packages/backend/scripts/execute-enterprise-dataset.js
+packages/backend/scripts/execute-live-generation.js
+packages/backend/scripts/extract-database-data.js
+packages/backend/scripts/inspect-audit.js
+packages/backend/scripts/reset-admin-password.js
+packages/backend/scripts/verify-api-endpoints.js
+packages/backend/scripts/verify-enterprise-dataset.js
+packages/backend/scripts/verify-reconciliation.js
+packages/backend/scripts/verify-website-live.js

@@ -105,6 +105,23 @@ describe('Auth API & Password Reset Workflow', () => {
 
       expect(res.status).toBe(401);
     });
+
+    it('strictly rejects unauthorized backdoor credentials (e.g. Admin@1234 or Password123! on user with different password)', async () => {
+      // testOrg admin password is 'Password1', so neither Admin@1234 nor Password123! must succeed
+      const resBypass1 = await request.post('/api/auth/login').send({
+        email: 'admin-auth-login@test.com',
+        password: 'Admin@1234',
+      });
+      expect(resBypass1.status).toBe(401);
+      expect(resBypass1.body.success).toBe(false);
+
+      const resBypass2 = await request.post('/api/auth/login').send({
+        email: 'admin-auth-login@test.com',
+        password: 'Password123!',
+      });
+      expect(resBypass2.status).toBe(401);
+      expect(resBypass2.body.success).toBe(false);
+    });
   });
 
   describe('GET /api/auth/me', () => {
@@ -256,6 +273,14 @@ describe('Auth API & Password Reset Workflow', () => {
       });
       expect(newLogin.status).toBe(200);
       expect(newLogin.body.data.tokens.accessToken).toBeTruthy();
+    });
+
+    it('supports password reset via organization admin alias (e.g. admin@bunyan.sa)', async () => {
+      const aliasRes = await request.post('/api/auth/forgot-password').send({
+        email: 'admin@bunyan.sa',
+      });
+      expect(aliasRes.status).toBe(200);
+      expect(aliasRes.body.data.devResetToken).toBeTruthy();
     });
   });
 

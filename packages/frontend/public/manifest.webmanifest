@@ -1,0 +1,22 @@
+{
+  "name": "بنيان | BUNYAN - إدارة المقاولات",
+  "short_name": "بنيان | BUNYAN",
+  "description": "منصة إدارة المقاولات والمشاريع المتكاملة - عقود، مستخلصات، فواتير ضريبية، ومتابعة مالية دقيقة",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F5F7FA",
+  "theme_color": "#102437",
+  "orientation": "any",
+  "dir": "rtl",
+  "lang": "ar",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "finance", "productivity"]
+}

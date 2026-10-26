@@ -187,6 +187,7 @@ export async function getDashboardAnalytics(
   const [
     clientCount,
     activeSiteCount,
+    allSites,
     pendingApprovalCount,
     approvedAndPartialEntries,
     approvedStatementsInPeriod,
@@ -194,6 +195,8 @@ export async function getDashboardAnalytics(
     issuedInvoicesInPeriod,
     allActiveReceivableInvoices,
     paymentsInPeriod,
+    historyInvoices,
+    historyPayments,
     recentWorkEntries,
     pendingWorkEntries,
     recentStatements,
@@ -203,6 +206,13 @@ export async function getDashboardAnalytics(
   ] = await Promise.all([
     prisma.client.count({ where: { organizationId, status: 'ACTIVE' } }),
     prisma.site.count({ where: { organizationId, status: 'ACTIVE' } }),
+    prisma.site.findMany({
+      where: { organizationId },
+      include: {
+        client: { select: { id: true, nameAr: true, nameEn: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
     prisma.workEntry.count({
       where: { organizationId, status: WorkEntryStatus.PENDING_APPROVAL },
     }),
@@ -241,6 +251,8 @@ export async function getDashboardAnalytics(
         id: true,
         referenceNo: true,
         invoiceType: true,
+        subtotal: true,
+        vatAmount: true,
         totalAmount: true,
         paidAmount: true,
         remainingAmount: true,
@@ -275,6 +287,34 @@ export async function getDashboardAnalytics(
       },
       include: {
         invoice: { select: { id: true, referenceNo: true, orgSnapshot: true } },
+      },
+    }),
+    // 6-Month History for Executive Monthly Bar Chart
+    prisma.invoice.findMany({
+      where: {
+        organizationId,
+        status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
+      },
+      select: {
+        id: true,
+        invoiceType: true,
+        issueDate: true,
+        totalAmount: true,
+        paidAmount: true,
+        remainingAmount: true,
+        orgSnapshot: true,
+      },
+    }),
+    prisma.payment.findMany({
+      where: {
+        organizationId,
+        status: { notIn: ['REVERSED', 'CANCELLED'] },
+        invoice: {
+          status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
+        },
+      },
+      include: {
+        invoice: { select: { orgSnapshot: true } },
       },
     }),
     // Operational lists
@@ -390,6 +430,8 @@ export async function getDashboardAnalytics(
     {
       currency: string;
       grossInvoiceValue: number;
+      netTaxableSubtotal: number;
+      netVatAmount: number;
       creditNotesTotal: number;
       debitNotesTotal: number;
       netInvoiceValue: number;
@@ -404,6 +446,8 @@ export async function getDashboardAnalytics(
       byCurrency[curr] = {
         currency: curr,
         grossInvoiceValue: 0,
+        netTaxableSubtotal: 0,
+        netVatAmount: 0,
         creditNotesTotal: 0,
         debitNotesTotal: 0,
         netInvoiceValue: 0,
@@ -416,8 +460,9 @@ export async function getDashboardAnalytics(
   };
 
   let totalInvoices = 0;
-  let paidInvoicesCount = 0;
   let grossInvoiceValue = new Decimal(0);
+  let netTaxableSubtotal = new Decimal(0);
+  let netVatAmount = new Decimal(0);
   let creditNotesTotal = new Decimal(0);
   let debitNotesTotal = new Decimal(0);
 
@@ -425,30 +470,41 @@ export async function getDashboardAnalytics(
     const curr = resolveDocCurrency(inv.orgSnapshot, defaultCurrency);
     const bucket = ensureCurr(curr);
     const amt = new Decimal(inv.totalAmount.toString());
+    const sub = new Decimal(inv.subtotal ? inv.subtotal.toString() : '0');
+    const tax = new Decimal(inv.vatAmount ? inv.vatAmount.toString() : '0');
 
     if (inv.invoiceType === InvoiceType.CREDIT_NOTE) {
       bucket.creditNotesTotal = Number(roundDecimal(new Decimal(bucket.creditNotesTotal).add(amt), 2));
       bucket.netInvoiceValue = Number(roundDecimal(new Decimal(bucket.netInvoiceValue).sub(amt), 2));
+      bucket.netTaxableSubtotal = Number(roundDecimal(new Decimal(bucket.netTaxableSubtotal).sub(sub), 2));
+      bucket.netVatAmount = Number(roundDecimal(new Decimal(bucket.netVatAmount).sub(tax), 2));
       if (curr === targetCurrency) {
         creditNotesTotal = creditNotesTotal.add(amt);
+        netTaxableSubtotal = netTaxableSubtotal.sub(sub);
+        netVatAmount = netVatAmount.sub(tax);
       }
     } else if (inv.invoiceType === InvoiceType.DEBIT_NOTE) {
       bucket.debitNotesTotal = Number(roundDecimal(new Decimal(bucket.debitNotesTotal).add(amt), 2));
       bucket.netInvoiceValue = Number(roundDecimal(new Decimal(bucket.netInvoiceValue).add(amt), 2));
+      bucket.netTaxableSubtotal = Number(roundDecimal(new Decimal(bucket.netTaxableSubtotal).add(sub), 2));
+      bucket.netVatAmount = Number(roundDecimal(new Decimal(bucket.netVatAmount).add(tax), 2));
       if (curr === targetCurrency) {
         debitNotesTotal = debitNotesTotal.add(amt);
+        netTaxableSubtotal = netTaxableSubtotal.add(sub);
+        netVatAmount = netVatAmount.add(tax);
       }
     } else {
       bucket.grossInvoiceValue = Number(
         roundDecimal(new Decimal(bucket.grossInvoiceValue).add(amt), 2)
       );
       bucket.netInvoiceValue = Number(roundDecimal(new Decimal(bucket.netInvoiceValue).add(amt), 2));
+      bucket.netTaxableSubtotal = Number(roundDecimal(new Decimal(bucket.netTaxableSubtotal).add(sub), 2));
+      bucket.netVatAmount = Number(roundDecimal(new Decimal(bucket.netVatAmount).add(tax), 2));
       if (curr === targetCurrency) {
         totalInvoices += 1;
         grossInvoiceValue = grossInvoiceValue.add(amt);
-        if (inv.paymentStatus === PaymentStatus.PAID) {
-          paidInvoicesCount += 1;
-        }
+        netTaxableSubtotal = netTaxableSubtotal.add(sub);
+        netVatAmount = netVatAmount.add(tax);
       }
     }
   }
@@ -466,12 +522,10 @@ export async function getDashboardAnalytics(
     }
   }
 
-  // 5. Point-in-time Receivables (Unpaid, Partially Paid, Overdue)
+  // 5. Point-in-time Receivables (Unpaid, Partially Paid, Overdue across active claims)
   const now = new Date();
   let totalOutstanding = new Decimal(0);
   let overdueAmount = new Decimal(0);
-  let unpaidInvoicesCount = 0;
-  let partiallyPaidInvoicesCount = 0;
   let overdueInvoicesCount = 0;
 
   for (const inv of allActiveReceivableInvoices) {
@@ -491,11 +545,6 @@ export async function getDashboardAnalytics(
 
       if (curr === targetCurrency) {
         totalOutstanding = totalOutstanding.add(rem);
-        if (inv.paymentStatus === PaymentStatus.UNPAID) {
-          unpaidInvoicesCount += 1;
-        } else if (inv.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
-          partiallyPaidInvoicesCount += 1;
-        }
         if (overdueDays !== null && overdueDays > 0) {
           overdueInvoicesCount += 1;
           overdueAmount = overdueAmount.add(rem);
@@ -503,6 +552,224 @@ export async function getDashboardAnalytics(
       }
     }
   }
+
+  // 6. Monthly Financial Performance for Executive Column Chart
+  const arabicMonths = [
+    'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+    'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
+  ];
+  const englishMonths = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  // Determine the start and end month bounds based on:
+  // - Explicit date range if provided (currentYear, custom, etc.)
+  // - Or the actual transaction timeline for targetCurrency so historical records are never masked
+  let startMonthStr: string;
+  let endMonthStr: string;
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  if (range.period === 'currentYear' && range.dateFrom && range.dateTo) {
+    const yr = range.dateFrom.getUTCFullYear();
+    startMonthStr = `${yr}-01`;
+    endMonthStr = `${yr}-12`;
+  } else if (range.dateFrom && range.dateTo && range.period === 'custom') {
+    startMonthStr = range.dateFrom.toISOString().slice(0, 7);
+    endMonthStr = range.dateTo.toISOString().slice(0, 7);
+  } else {
+    // Collect all active transaction months for targetCurrency
+    const activeMonthKeys = new Set<string>();
+    for (const inv of historyInvoices) {
+      if (inv.issueDate && resolveDocCurrency(inv.orgSnapshot, defaultCurrency) === targetCurrency) {
+        activeMonthKeys.add(inv.issueDate.toISOString().slice(0, 7));
+      }
+    }
+    for (const pay of historyPayments) {
+      if (pay.paymentDate && resolveDocCurrency(pay.invoice?.orgSnapshot, defaultCurrency) === targetCurrency) {
+        activeMonthKeys.add(pay.paymentDate.toISOString().slice(0, 7));
+      }
+    }
+
+    const sortedActiveMonths = Array.from(activeMonthKeys).sort();
+
+    if (sortedActiveMonths.length > 0) {
+      const earliestActive = sortedActiveMonths[0];
+      const latestActive = sortedActiveMonths[sortedActiveMonths.length - 1];
+
+      startMonthStr = earliestActive;
+      endMonthStr = latestActive > currentMonthKey ? latestActive : currentMonthKey;
+
+      // Limit to maximum 12 months for visual readability
+      const startParts = startMonthStr.split('-').map(Number);
+      const endParts = endMonthStr.split('-').map(Number);
+      const totalMonthsDiff = (endParts[0] - startParts[0]) * 12 + (endParts[1] - startParts[1]) + 1;
+
+      if (totalMonthsDiff > 12) {
+        const endDate = new Date(endParts[0], endParts[1] - 1, 1);
+        const startDate = new Date(endDate.getFullYear(), endDate.getMonth() - 11, 1);
+        startMonthStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}`;
+      }
+    } else {
+      // Fallback: trailing 6 months up to now
+      const d = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+      startMonthStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      endMonthStr = currentMonthKey;
+    }
+  }
+
+  const monthlyFinancialPerformance: Array<{
+    month: string;
+    labelAr: string;
+    labelEn: string;
+    invoicedAmount: number;
+    collectedAmount: number;
+    outstandingAmount: number;
+  }> = [];
+
+  const [sYr, sMo] = startMonthStr.split('-').map(Number);
+  const [eYr, eMo] = endMonthStr.split('-').map(Number);
+
+  let iterYr = sYr;
+  let iterMo = sMo;
+
+  while (iterYr < eYr || (iterYr === eYr && iterMo <= eMo)) {
+    const mKey = `${iterYr}-${String(iterMo).padStart(2, '0')}`;
+    const mIdx = iterMo - 1;
+    monthlyFinancialPerformance.push({
+      month: mKey,
+      labelAr: `${arabicMonths[mIdx]} ${iterYr}`,
+      labelEn: `${englishMonths[mIdx]} ${iterYr}`,
+      invoicedAmount: 0,
+      collectedAmount: 0,
+      outstandingAmount: 0,
+    });
+
+    iterMo++;
+    if (iterMo > 12) {
+      iterMo = 1;
+      iterYr++;
+    }
+  }
+
+  for (const inv of historyInvoices) {
+    if (!inv.issueDate) continue;
+    const invCurr = resolveDocCurrency(inv.orgSnapshot, defaultCurrency);
+    if (invCurr !== targetCurrency) continue;
+    const mKey = inv.issueDate.toISOString().slice(0, 7);
+    const item = monthlyFinancialPerformance.find((m) => m.month === mKey);
+    if (item) {
+      const amt = Number(inv.totalAmount);
+      const rem = Number(inv.remainingAmount);
+      if (inv.invoiceType === InvoiceType.CREDIT_NOTE) {
+        item.invoicedAmount = Number((item.invoicedAmount - amt).toFixed(2));
+      } else if (inv.invoiceType === InvoiceType.DEBIT_NOTE) {
+        item.invoicedAmount = Number((item.invoicedAmount + amt).toFixed(2));
+      } else {
+        item.invoicedAmount = Number((item.invoicedAmount + amt).toFixed(2));
+        item.outstandingAmount = Number((item.outstandingAmount + rem).toFixed(2));
+      }
+    }
+  }
+
+  for (const pay of historyPayments) {
+    if (!pay.paymentDate) continue;
+    const payCurr = resolveDocCurrency(pay.invoice?.orgSnapshot, defaultCurrency);
+    if (payCurr !== targetCurrency) continue;
+    const mKey = pay.paymentDate.toISOString().slice(0, 7);
+    const item = monthlyFinancialPerformance.find((m) => m.month === mKey);
+    if (item) {
+      item.collectedAmount = Number(
+        (item.collectedAmount + Number(pay.amount)).toFixed(2)
+      );
+    }
+  }
+
+  // 7. Payment Status Distribution for Executive Donut Chart (Strict 100% Partition by Payment Status)
+  let paidAmountTotal = new Decimal(0);
+  let partiallyPaidRemainingTotal = new Decimal(0);
+  let unpaidAmountTotal = new Decimal(0);
+
+  let paidInvoicesCount = 0;
+  let partiallyPaidInvoicesCount = 0;
+  let unpaidInvoicesCount = 0;
+
+  for (const inv of issuedInvoicesInPeriod) {
+    const curr = resolveDocCurrency(inv.orgSnapshot, defaultCurrency);
+    if (curr !== targetCurrency) continue;
+    if (inv.invoiceType === InvoiceType.CREDIT_NOTE || inv.invoiceType === InvoiceType.DEBIT_NOTE) {
+      continue;
+    }
+
+    const total = new Decimal(inv.totalAmount.toString());
+    const rem = new Decimal(inv.remainingAmount.toString());
+
+    if (inv.paymentStatus === PaymentStatus.PAID || rem.lte(0)) {
+      paidInvoicesCount += 1;
+      paidAmountTotal = paidAmountTotal.add(total);
+    } else if (inv.paymentStatus === PaymentStatus.PARTIALLY_PAID) {
+      partiallyPaidInvoicesCount += 1;
+      partiallyPaidRemainingTotal = partiallyPaidRemainingTotal.add(rem);
+    } else {
+      unpaidInvoicesCount += 1;
+      unpaidAmountTotal = unpaidAmountTotal.add(rem);
+    }
+  }
+
+  const paymentStatusDistribution = [
+    {
+      key: 'PAID',
+      labelAr: 'مدفوعة بالكامل',
+      labelEn: 'Fully Paid',
+      count: paidInvoicesCount,
+      amount: Number(roundDecimal(paidAmountTotal, 2)),
+      color: '#10B981',
+    },
+    {
+      key: 'PARTIALLY_PAID',
+      labelAr: 'مدفوعة جزئياً',
+      labelEn: 'Partially Paid',
+      count: partiallyPaidInvoicesCount,
+      amount: Number(roundDecimal(partiallyPaidRemainingTotal, 2)),
+      color: '#F59E0B',
+    },
+    {
+      key: 'UNPAID',
+      labelAr: 'غير مدفوعة',
+      labelEn: 'Unpaid',
+      count: unpaidInvoicesCount,
+      amount: Number(roundDecimal(unpaidAmountTotal, 2)),
+      color: '#3B82F6',
+    },
+  ];
+
+  // 8. Project & Operational Insights
+  const totalProjects = allSites.length;
+  const activeProjects = allSites.filter((s) => s.status === 'ACTIVE').length;
+  const completedProjects = allSites.filter((s) => s.status !== 'ACTIVE').length;
+
+  const projectInsights = {
+    totalProjects,
+    activeProjects,
+    completedProjects,
+    projectsList: allSites.slice(0, 6).map((s) => {
+      const siteUnbilled = unbilledWorkEntriesList.filter((w) => w.site?.id === s.id);
+      const siteUnbilledSum = siteUnbilled.reduce(
+        (acc, curr) => acc + (curr.unbilledAmount || 0),
+        0
+      );
+      return {
+        id: s.id,
+        nameAr: s.nameAr,
+        nameEn: s.nameEn,
+        status: s.status,
+        clientNameAr: s.client?.nameAr || '-',
+        clientNameEn: s.client?.nameEn || '-',
+        unbilledWorkCount: siteUnbilled.length,
+        unbilledAmount: Number(siteUnbilledSum.toFixed(2)),
+      };
+    }),
+  };
 
   const availableCurrencies = Object.keys(byCurrency);
 
@@ -518,6 +785,12 @@ export async function getDashboardAnalytics(
     // Backward-compatible & Phase 4 KPIs
     clientCount,
     activeSiteCount,
+    totalProjects,
+    activeProjects,
+    completedProjects,
+    projectInsights,
+    monthlyFinancialPerformance,
+    paymentStatusDistribution,
     pendingApprovalCount,
     approvedUnbilledValue: Number(roundDecimal(approvedUnbilledValue, 2)),
     approvedUnbilledCount: unbilledWorkEntriesList.length,
@@ -527,6 +800,9 @@ export async function getDashboardAnalytics(
     totalInvoices,
     totalInvoiceValue: Number(roundDecimal(grossInvoiceValue, 2)),
     grossInvoiceValue: Number(roundDecimal(grossInvoiceValue, 2)),
+    taxableSubtotal: Number(roundDecimal(netTaxableSubtotal, 2)),
+    realizedRevenue: Number(roundDecimal(netTaxableSubtotal, 2)),
+    vatAmount: Number(roundDecimal(netVatAmount, 2)),
     creditNotesTotal: Number(roundDecimal(creditNotesTotal, 2)),
     debitNotesTotal: Number(roundDecimal(debitNotesTotal, 2)),
     netInvoiceValue: Number(roundDecimal(netInvoiceValue, 2)),
@@ -537,6 +813,10 @@ export async function getDashboardAnalytics(
     paidInvoicesCount,
     overdueInvoicesCount,
     overdueAmount: Number(roundDecimal(overdueAmount, 2)),
+    overdueSummary: {
+      count: overdueInvoicesCount,
+      amount: Number(roundDecimal(overdueAmount, 2)),
+    },
     byCurrency: Object.values(byCurrency),
     // Operational lists
     recentWorkEntries,
@@ -1450,7 +1730,6 @@ export async function getReceivablesReport(organizationId: string, query: Record
   const invReport = await getInvoicesReport(organizationId, {
     ...query,
     includeCancelled: false,
-    limit: 1000,
     page: 1,
   });
 
@@ -1543,6 +1822,7 @@ export async function getCustomerStatementReport(
   organizationId: string,
   query: {
     clientId?: string;
+    period?: string;
     dateFrom?: string;
     dateTo?: string;
     currency?: string;
@@ -1562,12 +1842,12 @@ export async function getCustomerStatementReport(
   const targetCurrency = (query.currency || defaultCurrency).trim().toUpperCase();
 
   const range = resolvePeriodRange(
-    query.dateFrom || query.dateTo ? 'custom' : 'all',
+    query.period || (query.dateFrom || query.dateTo ? 'custom' : 'all'),
     query.dateFrom,
     query.dateTo
   );
 
-  // Fetch all issued invoices (including Credit & Debit notes) and active payments for this client
+  // Fetch all issued invoices (including Credit & Debit notes) and active non-reversed payments for this client
   const [issuedInvoices, payments] = await Promise.all([
     prisma.invoice.findMany({
       where: {
@@ -1575,19 +1855,40 @@ export async function getCustomerStatementReport(
         clientId: client.id,
         status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
       },
+      include: {
+        statement: { select: { id: true, referenceNo: true, title: true } },
+      },
       orderBy: [{ issueDate: 'asc' }, { createdAt: 'asc' }],
     }),
     prisma.payment.findMany({
       where: {
         organizationId,
         clientId: client.id,
+        status: { notIn: ['REVERSED', 'CANCELLED'] },
+        invoice: {
+          status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
+        },
       },
       include: {
-        invoice: { select: { id: true, referenceNo: true, orgSnapshot: true } },
+        invoice: { select: { id: true, referenceNo: true, status: true, orgSnapshot: true } },
       },
       orderBy: [{ paymentDate: 'asc' }, { createdAt: 'asc' }],
     }),
   ]);
+
+  // Map original invoice references for Credit and Debit notes
+  const cancelledByIds = issuedInvoices
+    .map((i) => i.cancelledById)
+    .filter((id): id is string => Boolean(id));
+
+  const originalInvoicesMap = new Map<string, string>();
+  if (cancelledByIds.length > 0) {
+    const origInvs = await prisma.invoice.findMany({
+      where: { id: { in: cancelledByIds }, organizationId },
+      select: { id: true, referenceNo: true },
+    });
+    origInvs.forEach((oi) => originalInvoicesMap.set(oi.id, oi.referenceNo));
+  }
 
   interface RawLedgerEvent {
     id: string;
@@ -1611,6 +1912,9 @@ export async function getCustomerStatementReport(
 
     const amt = new Decimal(inv.totalAmount.toString());
     const resp = (inv.zatcaResponse as Record<string, any>) || {};
+    const originalRef =
+      resp.billingReferenceId ||
+      (inv.cancelledById ? originalInvoicesMap.get(inv.cancelledById) : null);
 
     if (inv.invoiceType === InvoiceType.CREDIT_NOTE) {
       allEvents.push({
@@ -1619,16 +1923,16 @@ export async function getCustomerStatementReport(
         createdAt: inv.createdAt,
         documentNo: inv.referenceNo,
         transactionType: 'CREDIT_NOTE',
-        descriptionAr: `إشعار دائن على الفاتورة ${resp.billingReferenceId || ''} - ${
-          inv.cancellationReason || ''
+        descriptionAr: `إشعار دائن${originalRef ? ` على الفاتورة (${originalRef})` : ''}${
+          inv.cancellationReason ? ` - ${inv.cancellationReason}` : ''
         }`.trim(),
-        descriptionEn: `Credit Note on Invoice ${resp.billingReferenceId || ''} - ${
-          inv.cancellationReason || ''
+        descriptionEn: `Credit Note${originalRef ? ` on Invoice (${originalRef})` : ''}${
+          inv.cancellationReason ? ` - ${inv.cancellationReason}` : ''
         }`.trim(),
         currency: curr,
         debit: new Decimal(0),
         credit: amt,
-        relatedRef: resp.billingReferenceId || null,
+        relatedRef: originalRef || null,
       });
     } else if (inv.invoiceType === InvoiceType.DEBIT_NOTE) {
       allEvents.push({
@@ -1637,36 +1941,41 @@ export async function getCustomerStatementReport(
         createdAt: inv.createdAt,
         documentNo: inv.referenceNo,
         transactionType: 'DEBIT_NOTE',
-        descriptionAr: `إشعار مدين على الفاتورة ${resp.billingReferenceId || ''} - ${
-          inv.cancellationReason || ''
+        descriptionAr: `إشعار مدين${originalRef ? ` على الفاتورة (${originalRef})` : ''}${
+          inv.cancellationReason ? ` - ${inv.cancellationReason}` : ''
         }`.trim(),
-        descriptionEn: `Debit Note on Invoice ${resp.billingReferenceId || ''} - ${
-          inv.cancellationReason || ''
+        descriptionEn: `Debit Note${originalRef ? ` on Invoice (${originalRef})` : ''}${
+          inv.cancellationReason ? ` - ${inv.cancellationReason}` : ''
         }`.trim(),
         currency: curr,
         debit: amt,
         credit: new Decimal(0),
-        relatedRef: resp.billingReferenceId || null,
+        relatedRef: originalRef || null,
       });
     } else {
+      const typeLabelAr =
+        inv.invoiceType === InvoiceType.SIMPLIFIED_TAX_INVOICE
+          ? 'إصدار فاتورة ضريبية مبسطة'
+          : 'إصدار فاتورة ضريبية قياسية';
+      const typeLabelEn =
+        inv.invoiceType === InvoiceType.SIMPLIFIED_TAX_INVOICE
+          ? 'Simplified Tax Invoice'
+          : 'Standard Tax Invoice';
+      const stmtSuffixAr = inv.statement ? ` - مستخلص رقم ${inv.statement.referenceNo}` : '';
+      const stmtSuffixEn = inv.statement ? ` - Statement ${inv.statement.referenceNo}` : '';
+
       allEvents.push({
         id: inv.id,
         date: inv.issueDate,
         createdAt: inv.createdAt,
         documentNo: inv.referenceNo,
         transactionType: 'INVOICE',
-        descriptionAr:
-          inv.invoiceType === InvoiceType.SIMPLIFIED_TAX_INVOICE
-            ? `إصدار فاتورة ضريبية مبسطة (${inv.referenceNo})`
-            : `إصدار فاتورة ضريبية قياسية (${inv.referenceNo})`,
-        descriptionEn:
-          inv.invoiceType === InvoiceType.SIMPLIFIED_TAX_INVOICE
-            ? `Simplified Tax Invoice (${inv.referenceNo})`
-            : `Standard Tax Invoice (${inv.referenceNo})`,
+        descriptionAr: `${typeLabelAr} (${inv.referenceNo})${stmtSuffixAr}`,
+        descriptionEn: `${typeLabelEn} (${inv.referenceNo})${stmtSuffixEn}`,
         currency: curr,
         debit: amt,
         credit: new Decimal(0),
-        relatedRef: null,
+        relatedRef: inv.statement?.referenceNo || null,
       });
     }
   }
@@ -1692,10 +2001,25 @@ export async function getCustomerStatementReport(
     });
   }
 
-  // Sort chronologically by transaction date, then createdAt
+  // Accounting Ledger Sort:
+  // 1. Transaction Date (Day)
+  // 2. On same day, Debits (Invoices, Debit Notes) precede Credits (Credit Notes, Payments)
+  // 3. Fallback to createdAt
+  const typePriority: Record<string, number> = {
+    INVOICE: 1,
+    DEBIT_NOTE: 2,
+    CREDIT_NOTE: 3,
+    PAYMENT: 4,
+  };
+
   allEvents.sort((a, b) => {
-    const diff = a.date.getTime() - b.date.getTime();
-    if (diff !== 0) return diff;
+    const aDateOnly = a.date.toISOString().slice(0, 10);
+    const bDateOnly = b.date.toISOString().slice(0, 10);
+    if (aDateOnly !== bDateOnly) {
+      return aDateOnly.localeCompare(bDateOnly);
+    }
+    const prioDiff = (typePriority[a.transactionType] || 5) - (typePriority[b.transactionType] || 5);
+    if (prioDiff !== 0) return prioDiff;
     return a.createdAt.getTime() - b.createdAt.getTime();
   });
 
@@ -1794,12 +2118,16 @@ export async function getCustomerStatementReport(
       phone: client.phone,
       email: client.email,
       address: client.address,
+      status: client.status,
+      isArchived: client.status === 'INACTIVE',
     },
     period: {
+      period: range.period,
       dateFrom: range.dateFrom ? range.dateFrom.toISOString() : null,
       dateTo: range.dateTo ? range.dateTo.toISOString() : null,
     },
     filters: {
+      period: range.period,
       dateFrom: range.dateFrom ? range.dateFrom.toISOString() : null,
       dateTo: range.dateTo ? range.dateTo.toISOString() : null,
       currency: targetCurrency,
@@ -1811,6 +2139,10 @@ export async function getCustomerStatementReport(
       ? 'الرصيد الافتتاحي ينطبق فقط عند عرض كامل الحركات المالية بدون تصفية نوع الحركة'
       : null,
     openingBalance: isFilteredByTxType ? null : Number(roundDecimal(openingBalance, 2)),
+    totalInvoices: Number(roundDecimal(totalInvoices, 2)),
+    totalDebitNotes: Number(roundDecimal(totalDebitNotes, 2)),
+    totalCreditNotes: Number(roundDecimal(totalCreditNotes, 2)),
+    totalPayments: Number(roundDecimal(totalPayments, 2)),
     totalDebits: Number(roundDecimal(totalDebits, 2)),
     totalCredits: Number(roundDecimal(totalCredits, 2)),
     closingBalance: isFilteredByTxType ? null : Number(roundDecimal(closingBalance, 2)),

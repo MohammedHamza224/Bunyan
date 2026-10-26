@@ -35,7 +35,7 @@ export function ModuleListPage({ titleKey, endpoint, emptyKey }: ModuleListPageP
           <div className="p-12 text-center text-sm text-gray-500">{t(emptyKey)}</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm text-start">
+            <table className="w-full min-w-[500px] print:min-w-0 text-sm text-start">
               <thead className="bg-gray-50 border-b border-gray-200 text-xs text-gray-600 uppercase">
                 <tr>
                   <th className="px-6 py-3 text-start">{t('common.name')}</th>

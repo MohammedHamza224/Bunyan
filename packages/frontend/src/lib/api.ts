@@ -159,7 +159,10 @@ api.interceptors.response.use(
         refreshSubscribers = []
         setAccessToken(null)
         clearStoredRefreshToken()
-        if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+        const isAuthRoute = ['/login', '/register', '/forgot-password', '/reset-password'].includes(
+          window.location.pathname
+        )
+        if (!isAuthRoute) {
           window.location.href = '/login'
         }
         return Promise.reject(refreshError)

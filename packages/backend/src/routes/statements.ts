@@ -13,7 +13,7 @@ import {
   ValidationError,
   BusinessRuleError,
 } from '../middleware/errorHandler';
-import { StatementStatus, WorkEntryStatus, ClientStatus, Prisma } from '@prisma/client';
+import { StatementStatus, WorkEntryStatus, ClientStatus, InvoiceStatus, ZatcaStatus, Prisma } from '@prisma/client';
 import { getNextSequenceNumber } from '../utils/sequences';
 import { calculateVat, roundDecimal } from '../utils/finance';
 
@@ -357,7 +357,24 @@ router.put('/:id', requirePermission(PERMISSIONS.CREATE_STATEMENTS), async (req,
     );
   }
 
-  const { title, notes, issueDate, periodStart, periodEnd } = req.body;
+  const { title, notes, issueDate, periodStart, periodEnd, discountAmount } = req.body;
+
+  let recalculatedFields: Record<string, any> = {};
+  if (discountAmount !== undefined && discountAmount !== null && discountAmount !== '') {
+    const newDiscount = roundDecimal(new Decimal(discountAmount.toString()), 4);
+    if (newDiscount.lt(0) || newDiscount.gt(existing.subtotal)) {
+      throw new ValidationError('discountAmount must be between 0 and subtotal');
+    }
+    const taxableAmount = roundDecimal(existing.subtotal.sub(newDiscount), 4);
+    const vatAmount = calculateVat(taxableAmount, existing.vatRate);
+    const totalAmount = roundDecimal(taxableAmount.add(vatAmount), 4);
+    recalculatedFields = {
+      discountAmount: newDiscount,
+      taxableAmount,
+      vatAmount,
+      totalAmount,
+    };
+  }
 
   const updated = await prisma.statement.update({
     where: { id: req.params.id },
@@ -367,6 +384,7 @@ router.put('/:id', requirePermission(PERMISSIONS.CREATE_STATEMENTS), async (req,
       ...(issueDate !== undefined && { issueDate: new Date(issueDate) }),
       ...(periodStart !== undefined && { periodStart: periodStart ? new Date(periodStart) : null }),
       ...(periodEnd !== undefined && { periodEnd: periodEnd ? new Date(periodEnd) : null }),
+      ...recalculatedFields,
     },
   });
 
@@ -532,7 +550,12 @@ router.delete(
     const statement = await prisma.statement.findUnique({
       where: { id },
       include: {
-        invoices: true,
+        invoices: {
+          include: {
+            payments: true,
+            lines: true,
+          },
+        },
         lines: true,
       },
     });
@@ -540,19 +563,129 @@ router.delete(
     if (!statement) throw new NotFoundError('Statement');
     assertSameOrg(organizationId, statement.organizationId, 'Statement');
 
-    if (statement.invoices && statement.invoices.length > 0) {
+    const linkedInvoices = statement.invoices || [];
+
+    // Case C: Check for Active / Issued invoices first so the user gets guided to resolve them
+    if (linkedInvoices.length > 0) {
+      const activeInvoices = linkedInvoices.filter(
+        (inv) => inv.status !== InvoiceStatus.CANCELLED
+      );
+      if (activeInvoices.length > 0) {
+        const activeRefs = activeInvoices.map((inv) => inv.referenceNo).join(', ');
+        throw new BusinessRuleError(
+          `Cannot delete statement because it is linked to active or issued invoice(s) (${activeRefs}). Please cancel or resolve these invoices first.`
+        );
+      }
+    }
+
+    const canDelete =
+      statement.status === StatementStatus.DRAFT ||
+      statement.status === StatementStatus.CANCELLED;
+
+    if (!canDelete) {
       throw new BusinessRuleError(
-        'Cannot delete a statement that has linked invoices. Cancel or delete the invoices first.'
+        `Cannot delete statement with status ${statement.status}. Only DRAFT or CANCELLED statements can be deleted; approved statements must be cancelled first.`
       );
     }
 
-    if (statement.status !== StatementStatus.DRAFT) {
-      throw new BusinessRuleError(
-        `Cannot delete statement with status ${statement.status}. Only DRAFT statements can be deleted; approved statements must be cancelled instead.`
+    if (linkedInvoices.length > 0) {
+      // Case D: Check for Protected Financial Dependencies on Cancelled Invoices
+      // 1. Recorded payments
+      const invoicesWithPayments = linkedInvoices.filter(
+        (inv) => (inv.payments && inv.payments.length > 0) || inv.paidAmount.gt(0)
       );
+      if (invoicesWithPayments.length > 0) {
+        const refs = invoicesWithPayments.map((inv) => inv.referenceNo).join(', ');
+        throw new BusinessRuleError(
+          `Cannot delete statement because linked invoice(s) (${refs}) have recorded payment history. Financial payment records must be preserved.`
+        );
+      }
+
+      // 2. Officially reported to or cleared by ZATCA
+      const reportedInvoices = linkedInvoices.filter(
+        (inv) =>
+          inv.zatcaStatus === ZatcaStatus.REPORTED ||
+          inv.zatcaStatus === ZatcaStatus.CLEARED
+      );
+      if (reportedInvoices.length > 0) {
+        const refs = reportedInvoices.map((inv) => inv.referenceNo).join(', ');
+        throw new BusinessRuleError(
+          `Cannot delete statement because linked invoice(s) (${refs}) have been officially reported to or cleared by ZATCA. Official tax records must be retained for compliance audit trails.`
+        );
+      }
+
+      // 3. Linked Credit / Debit Notes
+      const linkedInvoiceIds = linkedInvoices.map((inv) => inv.id);
+      const linkedNotes = await prisma.invoice.findMany({
+        where: {
+          cancelledById: { in: linkedInvoiceIds },
+          organizationId,
+        },
+        select: { id: true, referenceNo: true },
+      });
+      if (linkedNotes.length > 0) {
+        const refs = linkedNotes.map((n) => n.referenceNo).join(', ');
+        throw new BusinessRuleError(
+          `Cannot delete statement because linked invoice(s) have associated credit or debit notes (${refs}).`
+        );
+      }
+
+      // 4. Check if any linked invoice is also linked to other active statements
+      for (const inv of linkedInvoices) {
+        const respJson = (inv.zatcaResponse as Record<string, any>) || {};
+        const otherStmtIds: string[] = (
+          Array.isArray(respJson.statementIds) ? respJson.statementIds : []
+        ).filter((sId: string) => sId !== id);
+
+        if (otherStmtIds.length > 0) {
+          const otherStatements = await prisma.statement.findMany({
+            where: { id: { in: otherStmtIds }, organizationId },
+            select: { id: true, referenceNo: true, status: true },
+          });
+          const activeOtherStmts = otherStatements.filter(
+            (s) => s.status !== StatementStatus.CANCELLED
+          );
+          if (activeOtherStmts.length > 0) {
+            const otherRefs = activeOtherStmts.map((s) => s.referenceNo).join(', ');
+            throw new BusinessRuleError(
+              `Cannot delete statement because linked invoice ${inv.referenceNo} is also linked to other active statement(s) (${otherRefs}).`
+            );
+          }
+        }
+      }
     }
 
     await prisma.$transaction(async (tx) => {
+      // Case B: If linked invoices are all cancelled and eligible, cascade delete them safely
+      if (linkedInvoices.length > 0) {
+        for (const inv of linkedInvoices) {
+          // Delete invoice lines
+          await tx.invoiceLine.deleteMany({ where: { invoiceId: inv.id } });
+
+          // Delete the invoice
+          await tx.invoice.delete({ where: { id: inv.id } });
+
+          // Record audit log for invoice cascade deletion
+          await tx.auditLog.create({
+            data: {
+              organizationId,
+              userId,
+              action: 'DELETE',
+              entityType: 'Invoice',
+              entityId: inv.id,
+              description: `Cascade deleted cancelled invoice ${inv.referenceNo} during deletion of cancelled statement ${statement.referenceNo}`,
+              metadata: {
+                referenceNo: inv.referenceNo,
+                previousStatus: inv.status,
+                parentStatementRef: statement.referenceNo,
+                operation: 'CASCADE_DELETE_WITH_STATEMENT',
+              },
+              ipAddress: req.ip || req.socket.remoteAddress,
+            },
+          });
+        }
+      }
+
       // Delete statement sites relations
       await tx.statementSite.deleteMany({ where: { statementId: id } });
 
@@ -570,10 +703,13 @@ router.delete(
           action: 'DELETE',
           entityType: 'Statement',
           entityId: id,
-          description: `Permanently deleted draft statement ${statement.referenceNo}`,
+          description: `Permanently deleted ${statement.status.toLowerCase()} statement ${statement.referenceNo}` +
+            (linkedInvoices.length > 0 ? ` and its ${linkedInvoices.length} eligible cancelled invoice(s)` : ''),
           metadata: {
             referenceNo: statement.referenceNo,
             totalAmount: statement.totalAmount.toString(),
+            status: statement.status,
+            deletedLinkedInvoiceCount: linkedInvoices.length,
             operation: 'PERMANENT_DELETE',
           },
           ipAddress: req.ip || req.socket.remoteAddress,
@@ -583,7 +719,10 @@ router.delete(
 
     res.json({
       success: true,
-      message: 'Draft statement deleted permanently',
+      message:
+        statement.status === StatementStatus.CANCELLED
+          ? 'Cancelled statement deleted permanently'
+          : 'Draft statement deleted permanently',
       data: { id, referenceNo: statement.referenceNo },
     });
   }

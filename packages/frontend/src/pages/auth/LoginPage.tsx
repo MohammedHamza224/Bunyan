@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { AlertCircle, Eye, EyeOff, CheckCircle2, Loader2, Lock, Mail } from 'lucide-react'
@@ -8,9 +8,16 @@ import { AuthSplitLayout, BunyanGeometricMark } from '../../components/auth/Auth
 export function LoginPage() {
   const { t, i18n } = useTranslation()
   const isAr = i18n.language === 'ar'
-  const { login } = useAuth()
+  const { login, isAuthenticated, isLoading } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
+      const from = (location.state as any)?.from?.pathname || '/dashboard'
+      navigate(from, { replace: true })
+    }
+  }, [isAuthenticated, isLoading, navigate, location])
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -57,7 +64,8 @@ export function LoginPage() {
     setIsSubmitting(true)
     try {
       await login(email.trim(), password, rememberMe)
-      navigate('/dashboard')
+      const from = (location.state as any)?.from?.pathname || '/dashboard'
+      navigate(from, { replace: true })
     } catch (err: any) {
       const status = err?.response?.status
       const apiMsg =

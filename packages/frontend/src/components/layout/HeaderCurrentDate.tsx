@@ -41,15 +41,15 @@ export function HeaderCurrentDate({ className = '', fixedDate }: HeaderCurrentDa
       data-testid="header-current-date"
       title={timezoneTooltip}
       aria-label={timezoneTooltip}
-      className={`flex items-center gap-2 px-2.5 py-1.5 md:px-3 md:py-1.5 rounded-lg border border-[#E4E7EC] bg-[#F8FAFC] text-[#18324B] shadow-2xs select-none transition-colors ${className}`}
+      className={`flex items-center gap-1.5 sm:gap-2 px-2 py-1 sm:px-2.5 sm:py-1.5 md:px-3 md:py-1.5 rounded-lg border border-[#E4E7EC] bg-[#F8FAFC] text-[#18324B] shadow-2xs select-none transition-colors ${className}`}
     >
       {/* Calendar Icon */}
-      <Calendar className="w-4 h-4 shrink-0 text-[#E6A23C]" aria-hidden="true" />
+      <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 text-[#E6A23C]" aria-hidden="true" />
 
-      {/* Date text (Desktop / Tablet: full date, Mobile: compact date) */}
+      {/* Date text (Desktop / Tablet: full date, Mobile: compact date with max-width containment) */}
       <span
         data-testid="header-current-date-text"
-        className="text-xs md:text-sm font-semibold tracking-tight text-[#18324B] whitespace-nowrap"
+        className="text-xs md:text-sm font-semibold tracking-tight text-[#18324B] truncate max-w-[130px] sm:max-w-none whitespace-nowrap"
       >
         {formattedDate}
       </span>

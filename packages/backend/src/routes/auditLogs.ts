@@ -7,10 +7,12 @@ import {
 } from '../middleware/auth';
 import { AuditAction, Prisma, UserRole } from '@prisma/client';
 import { ValidationError, BusinessRuleError, AuthorizationError } from '../middleware/errorHandler';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
-// Statutory Protected Entities & Actions (ZATCA, Tax, Accounting, and Administrative compliance)
+// Statutory Protected Entities & Actions (ZATCA, Tax, Accounting, and Business compliance)
+// NOTE: 'AuditLog' is technical/diagnostic and is NOT a statutory business entity!
 export const STATUTORY_PROTECTED_ENTITY_TYPES = [
   'Invoice',
   'INVOICE',
@@ -22,10 +24,15 @@ export const STATUTORY_PROTECTED_ENTITY_TYPES = [
   'STATEMENT',
   'StatementLine',
   'STATEMENT_LINE',
-  'AuditLog',
-  'AUDIT_LOG',
+  'TaxRecord',
+  'TAX_RECORD',
+  'ZATCA',
+  'Zatca',
   'OrganizationSettings',
   'ORGANIZATION_SETTINGS',
+  'OrgSettings',
+  'OrgCountry',
+  'OrgBankAccount',
 ];
 
 export const STATUTORY_PROTECTED_ACTIONS = [
@@ -33,6 +40,124 @@ export const STATUTORY_PROTECTED_ACTIONS = [
   AuditAction.PAYMENT_RECORD,
   AuditAction.ISSUE_STATEMENT,
 ];
+
+/**
+ * Helper to fetch active business entity IDs that represent active financial & statutory records.
+ * Cancelled or deleted business records are not active statutory ledgers.
+ */
+export async function getActiveStatutoryIds(organizationId: string): Promise<{
+  invoiceIds: string[];
+  statementIds: string[];
+  paymentIds: string[];
+}> {
+  const [invoices, statements, payments] = await Promise.all([
+    prisma.invoice.findMany({
+      where: { organizationId, status: { not: 'CANCELLED' } },
+      select: { id: true },
+    }),
+    prisma.statement.findMany({
+      where: { organizationId, status: { not: 'CANCELLED' } },
+      select: { id: true },
+    }),
+    prisma.payment.findMany({
+      where: { organizationId, status: { not: 'REVERSED' } },
+      select: { id: true },
+    }),
+  ]);
+
+  return {
+    invoiceIds: invoices.map((i) => i.id),
+    statementIds: statements.map((s) => s.id),
+    paymentIds: payments.map((p) => p.id),
+  };
+}
+
+/**
+ * Builds Prisma WHERE condition for strictly protected statutory records under
+ * Saudi VAT Executive Regulations (Art. 66), ZATCA E-Invoicing mandates,
+ * and Saudi Commercial Books Law.
+ * 
+ * Statutory Protected Records include:
+ * 1. Active Tax Invoices currently existing in the database (excluding DELETE/CANCEL actions).
+ * 2. Active Milestone Statements currently existing in the database (excluding DELETE/CANCEL actions).
+ * 3. Active Financial Payments currently existing in the database (excluding DELETE actions).
+ * 4. Regulatory ZATCA compliance records (TaxRecord, ZATCA).
+ * 5. Statutory issuance actions (ISSUE_INVOICE, PAYMENT_RECORD, ISSUE_STATEMENT).
+ */
+export async function getStatutoryProtectionWhere(
+  organizationId: string,
+  _isRetentionRoutine = false
+): Promise<Prisma.AuditLogWhereInput> {
+  const { invoiceIds, statementIds, paymentIds } = await getActiveStatutoryIds(organizationId);
+
+  const orConditions: Prisma.AuditLogWhereInput[] = [
+    { entityType: { in: ['TaxRecord', 'TAX_RECORD', 'ZATCA', 'Zatca'] } },
+    { action: { in: STATUTORY_PROTECTED_ACTIONS } },
+  ];
+
+  if (invoiceIds.length > 0) {
+    orConditions.push({
+      entityType: { in: ['Invoice', 'INVOICE'] },
+      entityId: { in: invoiceIds },
+      action: { notIn: [AuditAction.DELETE, AuditAction.CANCEL] },
+    });
+  }
+
+  if (statementIds.length > 0) {
+    orConditions.push({
+      entityType: { in: ['Statement', 'STATEMENT'] },
+      entityId: { in: statementIds },
+      action: { notIn: [AuditAction.DELETE, AuditAction.CANCEL] },
+    });
+  }
+
+  if (paymentIds.length > 0) {
+    orConditions.push({
+      entityType: { in: ['Payment', 'PAYMENT'] },
+      entityId: { in: paymentIds },
+      action: { not: AuditAction.DELETE },
+    });
+  }
+
+  return {
+    organizationId,
+    OR: orConditions,
+  };
+}
+
+export function getStatutoryPreservationReason(entityType: string, isAr = true): string {
+  const norm = (entityType || '').toUpperCase();
+  if (norm.includes('INVOICE')) {
+    return isAr
+      ? 'سجلات فواتير ضريبية محمية بموجب المادة 66 من لائحة ضريبة القيمة المضافة ولوائح الفوترة الإلكترونية (ZATCA)'
+      : 'Statutory tax invoice records protected under Article 66 of VAT Regulations & ZATCA mandates';
+  }
+  if (norm.includes('PAYMENT')) {
+    return isAr
+      ? 'سندات تحصيل ومدفوعات مالية محمية بموجب نظام الدفاتر التجارية والمعايير المحاسبية المعتمدة'
+      : 'Payment transactions protected under Saudi Commercial Books Law & accounting standards';
+  }
+  if (norm.includes('STATEMENT')) {
+    return isAr
+      ? 'مستخلصات إنجاز مشاريع معتمدة تعاقدياً وتوثق التزامات مالية ملزمة'
+      : 'Contractual project progress statements documenting binding financial milestones';
+  }
+  if (norm.includes('TAX') || norm.includes('ZATCA')) {
+    return isAr
+      ? 'قيود ضريبية وزكوية نظامية خاضعة للمطابقة والتدقيق النظامي'
+      : 'Tax and ZATCA regulatory compliance records subject to statutory audit';
+  }
+  return isAr
+    ? 'سجلات أعمال وتشغيل معتمدة مرتبطة بحقوق مالية وتعاقدية'
+    : 'Certified business records tied to financial & contractual obligations';
+}
+
+export const TECHNICAL_DIAGNOSTIC_ENTITY_TYPES = [
+  'AuditLog',
+  'AUDIT_LOG',
+];
+
+export type AuditLogCategory = 'FINANCIAL' | 'BUSINESS' | 'SECURITY' | 'TECHNICAL_DIAGNOSTIC';
 
 /**
  * Validates and calculates cutoff date for audit log retention policies.
@@ -78,35 +203,57 @@ export function parseRetentionCutoff(
 router.use(authenticate);
 
 /**
- * Classify audit event into structured business categories.
- * Security: authentication, session, password, user management, audit administrative actions.
- * Financial: invoices, payments, statements, credit/debit notes.
- * Business: clients, sites, work entries, item templates.
+ * Classify audit event into structured, unambiguous categories:
+ * - FINANCIAL: invoices, payments, statements, lines (statutory protected).
+ * - BUSINESS: clients, sites, work entries, item templates, units (operational data).
+ * - SECURITY: authentication, login, logout, user permissions, org settings.
+ * - TECHNICAL_DIAGNOSTIC: audit retention purge, test reset, diagnostic logs.
  */
-export function classifyAuditEvent(action: AuditAction, entityType: string): 'SECURITY' | 'FINANCIAL' | 'BUSINESS' {
+export function classifyAuditEvent(
+  action: AuditAction | string,
+  entityType: string,
+  metadata?: any,
+  description?: string
+): AuditLogCategory {
   const normType = (entityType || '').toLowerCase();
-  
-  // Security events
+  const act = String(action).toUpperCase();
+  const desc = (description || '').toLowerCase();
+
+  // 1. Technical & Diagnostic Logs
   if (
-    action === 'LOGIN' ||
-    action === 'LOGOUT' ||
-    action === 'USER_MANAGE' ||
-    ['user', 'auth', 'refreshtoken', 'passwordresettoken', 'auditlog'].includes(normType)
+    normType === 'auditlog' ||
+    act === 'RESET_TEST_LOGS' ||
+    metadata?.isTest === true ||
+    metadata?.operation === 'RETENTION_PURGE' ||
+    metadata?.operation === 'RETENTION_CLEANUP' ||
+    metadata?.operation === 'TEST_AUDIT_RESET' ||
+    desc.includes('retention purge') ||
+    desc.includes('reset test audit logs')
   ) {
-    return 'SECURITY';
+    return 'TECHNICAL_DIAGNOSTIC';
   }
 
-  // Financial and approval events
+  // 2. Financial & Statutory
   if (
-    action === 'ISSUE_INVOICE' ||
-    action === 'PAYMENT_RECORD' ||
-    action === 'ISSUE_STATEMENT' ||
+    act === 'ISSUE_INVOICE' ||
+    act === 'PAYMENT_RECORD' ||
+    act === 'ISSUE_STATEMENT' ||
     ['invoice', 'payment', 'statement', 'invoiceline', 'statementline'].includes(normType)
   ) {
     return 'FINANCIAL';
   }
 
-  // Business data events
+  // 3. Security & Governance
+  if (
+    act === 'LOGIN' ||
+    act === 'LOGOUT' ||
+    act === 'USER_MANAGE' ||
+    ['user', 'auth', 'refreshtoken', 'passwordresettoken'].includes(normType)
+  ) {
+    return 'SECURITY';
+  }
+
+  // 4. Operational Business
   return 'BUSINESS';
 }
 
@@ -201,19 +348,10 @@ function buildAuditLogWhereClause(organizationId: string, query: Record<string, 
     }
   }
 
-  // 7. Category Filter (SECURITY | FINANCIAL | BUSINESS)
+  // 7. Category Filter (FINANCIAL | OPERATIONAL / BUSINESS | SECURITY | TECHNICAL_DIAGNOSTIC)
   if (query.category) {
     const cat = String(query.category).toUpperCase();
-    if (cat === 'SECURITY') {
-      where.AND = [
-        {
-          OR: [
-            { action: { in: ['LOGIN', 'LOGOUT', 'USER_MANAGE'] } },
-            { entityType: { in: ['User', 'Auth', 'RefreshToken', 'PasswordResetToken', 'AuditLog'] } },
-          ],
-        },
-      ];
-    } else if (cat === 'FINANCIAL') {
+    if (cat === 'FINANCIAL') {
       where.AND = [
         {
           OR: [
@@ -222,11 +360,48 @@ function buildAuditLogWhereClause(organizationId: string, query: Record<string, 
           ],
         },
       ];
-    } else if (cat === 'BUSINESS') {
+    } else if (cat === 'SECURITY') {
       where.AND = [
         {
-          entityType: { in: ['WorkEntry', 'Client', 'Site', 'WorkItemTemplate'] },
+          OR: [
+            { action: { in: ['LOGIN', 'LOGOUT', 'USER_MANAGE'] } },
+            { entityType: { in: ['User', 'Auth', 'RefreshToken', 'PasswordResetToken'] } },
+          ],
         },
+      ];
+    } else if (cat === 'OPERATIONAL' || cat === 'BUSINESS') {
+      where.AND = [
+        {
+          entityType: { in: ['WorkEntry', 'Client', 'Site', 'WorkItemTemplate', 'UnitOfMeasure'] },
+        },
+      ];
+    } else if (cat === 'TECHNICAL_DIAGNOSTIC') {
+      where.AND = [
+        {
+          OR: [
+            { entityType: { in: TECHNICAL_DIAGNOSTIC_ENTITY_TYPES } },
+            { action: AuditAction.RESET_TEST_LOGS },
+          ],
+        },
+      ];
+    }
+  }
+
+  // 8. Eligibility Filter (ELIGIBLE | PROTECTED)
+  if (query.eligibility) {
+    const el = String(query.eligibility).toUpperCase();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    if (el === 'ELIGIBLE') {
+      where.createdAt = { ...(where.createdAt as object), lt: thirtyDaysAgo };
+      where.entityType = { notIn: STATUTORY_PROTECTED_ENTITY_TYPES };
+      where.action = { notIn: STATUTORY_PROTECTED_ACTIONS };
+    } else if (el === 'PROTECTED') {
+      where.OR = [
+        { createdAt: { gte: thirtyDaysAgo } },
+        { entityType: { in: STATUTORY_PROTECTED_ENTITY_TYPES } },
+        { action: { in: STATUTORY_PROTECTED_ACTIONS } },
       ];
     }
   }
@@ -268,7 +443,7 @@ router.get(
     // Attach categorized metadata for frontend grouping & presentation
     const items = rawItems.map((item) => ({
       ...item,
-      category: classifyAuditEvent(item.action, item.entityType),
+      category: classifyAuditEvent(item.action, item.entityType, item.metadata, item.description || ''),
     }));
 
     res.json({
@@ -279,6 +454,71 @@ router.get(
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+      },
+    });
+  }
+);
+
+/**
+ * GET /api/audit-logs/stats
+ * Returns compact summary counts for the Executive Summary Cards.
+ */
+router.get(
+  '/stats',
+  requireRole(UserRole.ORG_ADMIN, UserRole.ORG_MANAGER, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId } = authReq.user;
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, false);
+
+    const [
+      totalRecords,
+      todayRecords,
+      statutoryRecords,
+      eligibleRetentionCount,
+      eligibleCleanCount,
+    ] = await Promise.all([
+      prisma.auditLog.count({ where: { organizationId } }),
+      prisma.auditLog.count({
+        where: { organizationId, createdAt: { gte: todayStart } },
+      }),
+      prisma.auditLog.count({ where: statutoryWhere }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          createdAt: { lt: thirtyDaysAgo },
+          NOT: statutoryWhere,
+        },
+      }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          NOT: statutoryWhere,
+        },
+      }),
+    ]);
+
+    const protectedCount = statutoryRecords;
+
+    res.json({
+      success: true,
+      data: {
+        totalRecords,
+        todayRecords,
+        protectedCount,
+        eligibleRetentionCount,
+        eligibleTestDebugCount: eligibleCleanCount,
+        eligibleDevTestCount: eligibleCleanCount,
+        financialRecords: statutoryRecords,
+        technicalRecords: eligibleCleanCount,
+        isDevelopment: process.env.NODE_ENV !== 'production',
       },
     });
   }
@@ -302,6 +542,94 @@ router.get(
     });
 
     res.json({ success: true, data: users });
+  }
+);
+
+/**
+ * GET /api/audit-logs/protected-summary
+ * Detailed explanation and statistics of protected records under Saudi and statutory regulations.
+ */
+router.get(
+  '/protected-summary',
+  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId } = authReq.user;
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const [
+      invoicesCount,
+      paymentsCount,
+      statementsCount,
+      recentWindowCount,
+      totalCount,
+    ] = await Promise.all([
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          OR: [{ entityType: 'Invoice' }, { action: AuditAction.ISSUE_INVOICE }],
+        },
+      }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          OR: [{ entityType: 'Payment' }, { action: AuditAction.PAYMENT_RECORD }],
+        },
+      }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          OR: [{ entityType: 'Statement' }, { action: AuditAction.ISSUE_STATEMENT }],
+        },
+      }),
+      prisma.auditLog.count({
+        where: { organizationId, createdAt: { gte: thirtyDaysAgo } },
+      }),
+      prisma.auditLog.count({ where: { organizationId } }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalCount,
+        protectedReasons: [
+          {
+            key: 'ZATCA_INVOICES',
+            titleAr: 'فواتير ضريبية نظامية (ZATCA)',
+            titleEn: 'Statutory Tax Invoices (ZATCA)',
+            count: invoicesCount,
+            reasonAr: 'محمية بموجب المادة 66 من اللائحة التنفيذية لضريبة القيمة المضافة ونظام الفوترة الإلكترونية.',
+            reasonEn: 'Protected under Article 66 of Saudi VAT Regulations and ZATCA E-Invoicing mandates.',
+          },
+          {
+            key: 'FINANCIAL_PAYMENTS',
+            titleAr: 'سندات الدفع والتحصيل المالي',
+            titleEn: 'Financial Payments & Receipts',
+            count: paymentsCount,
+            reasonAr: 'محمية بموجب نظام الدفاتر التجارية والمعايير المحاسبية المعتمدة في المملكة.',
+            reasonEn: 'Protected under Saudi Commercial Books Law and certified IFRS accounting standards.',
+          },
+          {
+            key: 'WORK_STATEMENTS',
+            titleAr: 'مستخلصات الأعمال المعتمدة',
+            titleEn: 'Approved Work Statements',
+            count: statementsCount,
+            reasonAr: 'توثيق رسمي لإنجاز المشاريع المرتبط بالفوترة والمدفوعات التعاقدية.',
+            reasonEn: 'Official contractual milestone verification tied to invoicing and payments.',
+          },
+          {
+            key: 'THIRTY_DAY_WINDOW',
+            titleAr: 'نافذة الحفظ القانوني (آخر 30 يوماً)',
+            titleEn: 'Statutory 30-Day Active Window',
+            count: recentWindowCount,
+            reasonAr: 'سجلات العمليات النشطة خلال آخر 30 يوماً محمية من أي حذف لدواعي التدقيق الفوري.',
+            reasonEn: 'All records generated within the last 30 days are immutable for operational audit integrity.',
+          },
+        ],
+      },
+    });
   }
 );
 
@@ -349,7 +677,7 @@ router.get(
     ];
 
     const rows = records.map((r) => {
-      const cat = classifyAuditEvent(r.action, r.entityType);
+      const cat = classifyAuditEvent(r.action, r.entityType, r.metadata, r.description || '');
       const isoDate = r.createdAt.toISOString();
       const localDate = r.createdAt.toLocaleString('ar-SA');
       return [
@@ -415,20 +743,18 @@ router.post(
     const cutoffDateFormatted = cutoffDate.toISOString().split('T')[0];
 
     // Build query conditions
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, true);
+
     const eligibleWhere: Prisma.AuditLogWhereInput = {
       organizationId,
       createdAt: { lt: cutoffDate },
-      entityType: { notIn: STATUTORY_PROTECTED_ENTITY_TYPES },
-      action: { notIn: STATUTORY_PROTECTED_ACTIONS },
+      NOT: statutoryWhere,
     };
 
     const olderProtectedWhere: Prisma.AuditLogWhereInput = {
       organizationId,
       createdAt: { lt: cutoffDate },
-      OR: [
-        { entityType: { in: STATUTORY_PROTECTED_ENTITY_TYPES } },
-        { action: { in: STATUTORY_PROTECTED_ACTIONS } },
-      ],
+      AND: [statutoryWhere],
     };
 
     const recentWhere: Prisma.AuditLogWhereInput = {
@@ -444,6 +770,8 @@ router.post(
       oldestRecord,
       newestRecord,
       sampleEligible,
+      testLogsCount,
+      statutoryCount,
     ] = await Promise.all([
       prisma.auditLog.count({ where: { organizationId } }),
       prisma.auditLog.count({ where: recentWhere }),
@@ -464,15 +792,32 @@ router.post(
         take: 200,
         select: { action: true, entityType: true },
       }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          entityType: { notIn: STATUTORY_PROTECTED_ENTITY_TYPES },
+          action: { notIn: STATUTORY_PROTECTED_ACTIONS },
+        },
+      }),
+      prisma.auditLog.count({
+        where: {
+          organizationId,
+          OR: [
+            { entityType: { in: STATUTORY_PROTECTED_ENTITY_TYPES } },
+            { action: { in: STATUTORY_PROTECTED_ACTIONS } },
+          ],
+        },
+      }),
     ]);
 
     const totalProtectedRecords = recentProtectedCount + olderProtectedCount;
 
     // Calculate category breakdown of eligible records
-    const categoryBreakdown = {
+    const categoryBreakdown: Record<AuditLogCategory, number> = {
       SECURITY: 0,
       FINANCIAL: 0,
       BUSINESS: 0,
+      TECHNICAL_DIAGNOSTIC: 0,
     };
     for (const r of sampleEligible) {
       const cat = classifyAuditEvent(r.action, r.entityType);
@@ -490,8 +835,8 @@ router.post(
     } else if (totalEligibleCount === 0) {
       if (recentProtectedCount === systemTotalRecords) {
         reasonCode = 'ALL_RECORDS_WITHIN_RETENTION';
-        explanationReason = `جميع سجلات التدقيق في النظام (${systemTotalRecords} سجل) أُنشئت حديثاً بعد تاريخ الفرز (${cutoffDateFormatted}) وهي محمية بالكامل ضمن فترة الحفظ المحددة.`;
-        explanationReasonEn = `All ${systemTotalRecords} audit logs in the system were created recently after the cutoff date (${cutoffDateFormatted}) and are protected within the retention window.`;
+        explanationReason = `جميع سجلات التدقيق في النظام (${systemTotalRecords} سجل) أُنشئت حديثاً بعد تاريخ الفرز (${cutoffDateFormatted}) وهي مشمولة بالحماية القانونية ضمن فترة الحفظ المحددة (${days || 30} يوماً). لتفريغ سجلات الفحص والتطوير الحالية، استخدم خيار "تفريغ سجلات الاختبار والتطوير".`;
+        explanationReasonEn = `All ${systemTotalRecords} audit logs in the system were created recently after the cutoff date (${cutoffDateFormatted}) and are protected within the active retention window (${days || 30} days). To clear development/testing logs, use the "Clear Test/Development Logs" option.`;
       } else if (olderProtectedCount > 0) {
         reasonCode = 'ALL_OLDER_RECORDS_PROTECTED';
         explanationReason = `توجد سجلات أقدم من تاريخ الفرز (${cutoffDateFormatted})، ولكن جميعها (${olderProtectedCount} سجل) محمية نظامياً وضريبياً (فواتير، مستخلصات، مدفوعات زكوية) ولا يمكن حذفها.`;
@@ -503,8 +848,8 @@ router.post(
       }
     } else {
       reasonCode = 'RECORDS_ELIGIBLE';
-      explanationReason = `يوجد ${totalEligibleCount} سجل إداري مؤهل للتنظيف أقدم من ${cutoffDateFormatted}. السجلات المالية والضريبية (${olderProtectedCount}) محمية دائماً.`;
-      explanationReasonEn = `Found ${totalEligibleCount} eligible administrative records older than ${cutoffDateFormatted}. Financial and tax records (${olderProtectedCount}) are permanently preserved.`;
+      explanationReason = `يوجد ${totalEligibleCount} سجل إداري وتقني مؤهل للتنظيف أقدم من ${cutoffDateFormatted}. السجلات المالية والضريبية (${olderProtectedCount}) محمية دائماً.`;
+      explanationReasonEn = `Found ${totalEligibleCount} eligible administrative/technical records older than ${cutoffDateFormatted}. Financial and tax records (${olderProtectedCount}) are permanently preserved.`;
     }
 
     res.json({
@@ -520,6 +865,8 @@ router.post(
         protectedRecords: totalProtectedRecords,
         recentProtectedCount,
         olderProtectedCount,
+        eligibleDevTestCount: testLogsCount,
+        statutoryBusinessCount: statutoryCount,
         categoryBreakdown,
         oldestEligibleDate: oldestRecord?.createdAt || null,
         newestEligibleDate: newestRecord?.createdAt || null,
@@ -538,13 +885,11 @@ router.post(
 
 /**
  * POST /api/audit-logs/cleanup/execute
- * Controlled retention cleanup execution.
- * Requires:
- * 1. ORG_ADMIN or SUPER_ADMIN authorization.
- * 2. Explicit confirmation token ('CONFIRM_AUDIT_LOG_CLEANUP').
- * 3. Acknowledged policy compliance flag.
- * 4. Safe transaction with automatic exclusion of protected records.
- * 5. Immutable audit record generated ONLY when eligible records are deleted (prevents noise on zero deletion).
+ * Controlled retention cleanup execution with safe batch deletion.
+ * Guarantees:
+ * 1. Financial and tax records are strictly protected.
+ * 2. Multi-batch processing processes ALL eligible records.
+ * 3. An immutable audit record is created ONLY if records are actually purged (zero noise on 0 purge).
  */
 router.post(
   '/cleanup/execute',
@@ -570,23 +915,27 @@ router.post(
     const { cutoffDate, days } = parseRetentionCutoff(olderThanDays, beforeDate);
     const cutoffDateFormatted = cutoffDate.toISOString().split('T')[0];
 
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, true);
+
     const eligibleWhere: Prisma.AuditLogWhereInput = {
       organizationId,
       createdAt: { lt: cutoffDate },
-      entityType: { notIn: STATUTORY_PROTECTED_ENTITY_TYPES },
-      action: { notIn: STATUTORY_PROTECTED_ACTIONS },
+      NOT: statutoryWhere,
     };
 
-    // Pre-check count to prevent empty operations and noise
+    const totalBefore = await prisma.auditLog.count({ where: { organizationId } });
     const eligibleCount = await prisma.auditLog.count({ where: eligibleWhere });
 
     if (eligibleCount === 0) {
-      // Do NOT create an audit log entry when 0 records are eligible (avoids noise)
       return res.json({
         success: true,
         message: `لم يتم حذف أي سجلات: لا توجد سجلات مؤهلة للحذف أقدم من ${cutoffDateFormatted}، وجميع السجلات الحالية محمية.`,
         data: {
+          totalBefore,
+          eligibleCount: 0,
           purgedCount: 0,
+          protectedCount: totalBefore,
+          remainingCount: totalBefore,
           cutoffDate: cutoffDate.toISOString(),
           cutoffDateFormatted,
           canExecute: false,
@@ -595,46 +944,263 @@ router.post(
       });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const deleteResult = await tx.auditLog.deleteMany({
+    // Process all eligible records in safe batches
+    let purgedCount = 0;
+    const BATCH_SIZE = 1000;
+    while (true) {
+      const batch = await prisma.auditLog.findMany({
         where: eligibleWhere,
+        take: BATCH_SIZE,
+        select: { id: true },
       });
+      if (batch.length === 0) break;
+      const ids = batch.map((r) => r.id);
+      const deleteResult = await prisma.auditLog.deleteMany({
+        where: { id: { in: ids } },
+      });
+      purgedCount += deleteResult.count;
+      if (batch.length < BATCH_SIZE) break;
+    }
 
-      // Immutable administrative audit log entry ONLY when records are actually deleted
-      let cleanupLog = null;
-      if (deleteResult.count > 0) {
-        cleanupLog = await tx.auditLog.create({
-          data: {
-            organizationId,
-            userId,
-            action: AuditAction.DELETE,
-            entityType: 'AuditLog',
-            entityId: 'RETENTION_CLEANUP',
-            description: `Controlled retention cleanup executed: purged ${deleteResult.count} eligible records older than ${cutoffDateFormatted}. Financial, tax, and administrative records protected.`,
-            metadata: {
-              purgedCount: deleteResult.count,
-              cutoffDate: cutoffDate.toISOString(),
-              policyAcknowledged: true,
-              requestedBy: email,
-              operation: 'RETENTION_CLEANUP',
-              retentionDays: days ?? undefined,
-            },
-            ipAddress: req.ip || req.socket.remoteAddress,
+    // Document cleanup in audit trail ONLY when records were actually purged
+    let cleanupLog = null;
+    if (purgedCount > 0) {
+      cleanupLog = await prisma.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: AuditAction.DELETE,
+          entityType: 'AuditLog',
+          entityId: 'RETENTION_CLEANUP',
+          description: `Controlled retention cleanup executed: purged ${purgedCount} eligible records older than ${cutoffDateFormatted}. Financial and tax records protected.`,
+          metadata: {
+            purgedCount,
+            cutoffDate: cutoffDate.toISOString(),
+            policyAcknowledged: true,
+            requestedBy: email,
+            operation: 'RETENTION_CLEANUP',
+            retentionDays: days ?? undefined,
           },
-        });
-      }
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+    }
 
-      return { purgedCount: deleteResult.count, cleanupLog };
-    });
+    const remainingCount = await prisma.auditLog.count({ where: { organizationId } });
 
     res.json({
       success: true,
-      message: `Successfully purged ${result.purgedCount} eligible audit logs older than ${cutoffDateFormatted}`,
+      message: `Successfully purged ${purgedCount} eligible audit logs older than ${cutoffDateFormatted}`,
       data: {
-        purgedCount: result.purgedCount,
+        totalBefore,
+        eligibleCount,
+        purgedCount,
+        protectedCount: remainingCount - (cleanupLog ? 1 : 0),
+        remainingCount,
         cutoffDate: cutoffDate.toISOString(),
         cutoffDateFormatted,
-        cleanupAuditId: result.cleanupLog?.id || null,
+        cleanupAuditId: cleanupLog?.id || null,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+);
+
+/**
+ * POST /api/audit-logs/cleanup/test-debug
+ * Purge technical and diagnostic noise records (e.g. legacy empty purge logs, debug test entries)
+ * without touching ANY business records (Invoices, Payments, Statements, Works, Clients).
+ * Restricted to ORG_ADMIN and SUPER_ADMIN.
+ */
+router.post(
+  '/cleanup/test-debug',
+  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId } = authReq.user;
+
+    // Strict Production Environment Guard
+    if (process.env.NODE_ENV === 'production') {
+      throw new AuthorizationError(
+        'تنظيف السجلات التجريبية والتشخيصية غير مسموح به في بيئة الإنتاج / Cleaning debug/test records is strictly prohibited in production'
+      );
+    }
+
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, false);
+
+    const technicalWhere: Prisma.AuditLogWhereInput = {
+      organizationId,
+      NOT: statutoryWhere,
+    };
+
+    const totalBefore = await prisma.auditLog.count({ where: { organizationId } });
+    const eligibleCount = await prisma.auditLog.count({ where: technicalWhere });
+
+    if (eligibleCount === 0) {
+      return res.json({
+        success: true,
+        message: 'لا توجد سجلات تقنية أو تجريبية مؤهلة للتنظيف حالياً.',
+        data: {
+          totalBefore,
+          eligibleCount: 0,
+          purgedCount: 0,
+          remainingCount: totalBefore,
+        },
+      });
+    }
+
+    // Process all matching technical records in safe batches
+    let purgedCount = 0;
+    const BATCH_SIZE = 1000;
+    while (true) {
+      const batch = await prisma.auditLog.findMany({
+        where: technicalWhere,
+        take: BATCH_SIZE,
+        select: { id: true },
+      });
+      if (batch.length === 0) break;
+      const ids = batch.map((r) => r.id);
+      const res = await prisma.auditLog.deleteMany({
+        where: { id: { in: ids } },
+      });
+      purgedCount += res.count;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    const remainingCount = await prisma.auditLog.count({ where: { organizationId } });
+
+    res.json({
+      success: true,
+      message: `تم تنظيف ${purgedCount} سجل تقني وتجريبي بنجاح مع الحفاظ الكامل على كافة العمليات المالية والتنفيذية.`,
+      data: {
+        totalBefore,
+        eligibleCount,
+        purgedCount,
+        remainingCount,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+);
+
+/**
+ * POST /api/audit-logs/cleanup/dev-test
+ * Dedicated operation for clearing test and development audit records.
+ * STRICT SERVER-SIDE SAFEGUARDS:
+ * 1. Verified development environment guard: rejected in production with 403 Forbidden.
+ * 2. Strict authorization: ORG_ADMIN or SUPER_ADMIN only.
+ * 3. Explicit confirmation token: 'CONFIRM_CLEAR_DEV_LOGS' (or 'CLEAR_TEST_LOGS' / 'RESET_TEST_AUDIT_LOGS').
+ * 4. NEVER deletes statutory business/financial records (Invoices, Payments, Statements, Tax, ZATCA).
+ * 5. Returns detailed breakdown of purged test records and preserved statutory records.
+ */
+router.post(
+  ['/cleanup/dev-test', '/reset-test-logs'],
+  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: userId, email } = authReq.user;
+
+    // Strict Environment Guard
+    if (process.env.NODE_ENV === 'production') {
+      throw new AuthorizationError(
+        'عملية تفريغ سجلات الفحص والتطوير غير مسموحة نهائياً في بيئة الإنتاج / Clear test/development logs is strictly prohibited in production environments'
+      );
+    }
+
+    const { confirmationToken, confirmToken, recordSecurityLog } = req.body || {};
+    const token = (confirmationToken || confirmToken || '').trim().toUpperCase();
+
+    const VALID_TOKENS = ['CONFIRM_CLEAR_DEV_LOGS', 'CLEAR_TEST_LOGS', 'RESET_TEST_AUDIT_LOGS'];
+    if (!VALID_TOKENS.includes(token)) {
+      throw new ValidationError(
+        'رمز التأكيد "CONFIRM_CLEAR_DEV_LOGS" إلزامي لتنفيذ عملية تفريغ سجلات الاختبار / Explicit confirmation token "CONFIRM_CLEAR_DEV_LOGS" or "RESET_TEST_AUDIT_LOGS" is required'
+      );
+    }
+
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, false);
+
+    // Even in development, NEVER delete statutory business and financial records!
+    const targetWhere: Prisma.AuditLogWhereInput = {
+      organizationId,
+      NOT: statutoryWhere,
+    };
+
+    const [totalBefore, eligibleCount, preservedCount, preservedGroups] = await Promise.all([
+      prisma.auditLog.count({ where: { organizationId } }),
+      prisma.auditLog.count({ where: targetWhere }),
+      prisma.auditLog.count({ where: statutoryWhere }),
+      prisma.auditLog.groupBy({
+        by: ['entityType'],
+        where: statutoryWhere,
+        _count: true,
+      }),
+    ]);
+
+    let purgedCount = 0;
+    const BATCH_SIZE = 1000;
+    while (true) {
+      const batch = await prisma.auditLog.findMany({
+        where: targetWhere,
+        take: BATCH_SIZE,
+        select: { id: true },
+      });
+      if (batch.length === 0) break;
+      const ids = batch.map((r) => r.id);
+      const del = await prisma.auditLog.deleteMany({
+        where: { id: { in: ids } },
+      });
+      purgedCount += del.count;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    // Record administrative event describing the cleanup operation unless recordSecurityLog is explicitly false
+    const shouldRecordSecurityLog = recordSecurityLog !== false;
+    let securityLogId = null;
+    if (shouldRecordSecurityLog) {
+      const secLog = await prisma.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: AuditAction.RESET_TEST_LOGS,
+          entityType: 'AuditLog',
+          entityId: 'TEST_AUDIT_RESET',
+          description: `Clear test/development logs executed in development by admin ${email}: purged ${purgedCount} test/debug records. All statutory business, tax, and financial records (${preservedCount}) were strictly preserved.`,
+          metadata: {
+            purgedCount,
+            preservedCount,
+            environment: process.env.NODE_ENV || 'development',
+            performedBy: email,
+            timestamp: new Date().toISOString(),
+          },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+      securityLogId = secLog.id;
+    }
+
+    const finalTotalCount = await prisma.auditLog.count({ where: { organizationId } });
+
+    const preservedBreakdown = preservedGroups.map((g) => ({
+      entityType: g.entityType,
+      count: g._count,
+      reasonAr: getStatutoryPreservationReason(g.entityType, true),
+      reasonEn: getStatutoryPreservationReason(g.entityType, false),
+    }));
+
+    res.json({
+      success: true,
+      message: `تم تفريغ ${purgedCount} سجل اختبار وتطوير بنجاح، مع الحفاظ الكامل على ${preservedCount} سجل مالي وضريبي.`,
+      messageEn: `Successfully cleared ${purgedCount} development/test logs while strictly preserving ${preservedCount} statutory business and financial records.`,
+      data: {
+        totalBefore,
+        eligibleCount,
+        purgedCount,
+        preservedCount,
+        preservedBreakdown,
+        remainingCount: finalTotalCount,
+        finalTotalCount,
+        securityLogId,
+        isDevelopment: true,
       },
     });
   }
@@ -644,7 +1210,6 @@ router.post(
  * DELETE /api/audit-logs/purge
  * Backward-compatible endpoint for existing test suites and administrative purge commands.
  * Strictly restricted to ORG_ADMIN or SUPER_ADMIN.
- * Applies statutory protections for financial and ZATCA records, and eliminates 0-count audit noise.
  */
 router.delete(
   '/purge',
@@ -657,17 +1222,17 @@ router.delete(
     const { cutoffDate, days } = parseRetentionCutoff(olderThanDays, beforeDate);
     const cutoffDateFormatted = cutoffDate.toISOString().split('T')[0];
 
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, true);
+
     const eligibleWhere: Prisma.AuditLogWhereInput = {
       organizationId,
       createdAt: { lt: cutoffDate },
-      entityType: { notIn: STATUTORY_PROTECTED_ENTITY_TYPES },
-      action: { notIn: STATUTORY_PROTECTED_ACTIONS },
+      NOT: statutoryWhere,
     };
 
     const eligibleCount = await prisma.auditLog.count({ where: eligibleWhere });
 
     if (eligibleCount === 0) {
-      // Do NOT create noise audit log entry when 0 records are eligible
       return res.json({
         success: true,
         message: `No records purged: no eligible audit logs older than ${cutoffDateFormatted}`,
@@ -680,43 +1245,244 @@ router.delete(
       });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const deleteResult = await tx.auditLog.deleteMany({
+    let purgedCount = 0;
+    const BATCH_SIZE = 1000;
+    while (true) {
+      const batch = await prisma.auditLog.findMany({
         where: eligibleWhere,
+        take: BATCH_SIZE,
+        select: { id: true },
       });
+      if (batch.length === 0) break;
+      const ids = batch.map((r) => r.id);
+      const del = await prisma.auditLog.deleteMany({
+        where: { id: { in: ids } },
+      });
+      purgedCount += del.count;
+      if (batch.length < BATCH_SIZE) break;
+    }
 
-      let purgeLog = null;
-      if (deleteResult.count > 0) {
-        purgeLog = await tx.auditLog.create({
-          data: {
-            organizationId,
-            userId,
-            action: AuditAction.DELETE,
-            entityType: 'AuditLog',
-            entityId: 'RETENTION_PURGE',
-            description: `Audit log retention purge: deleted ${deleteResult.count} records older than ${cutoffDateFormatted}`,
-            metadata: {
-              purgedCount: deleteResult.count,
-              cutoffDate: cutoffDate.toISOString(),
-              requestedBy: email,
-              operation: 'RETENTION_PURGE',
-              retentionDays: days ?? undefined,
-            },
-            ipAddress: req.ip || req.socket.remoteAddress,
+    if (purgedCount > 0) {
+      await prisma.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: AuditAction.DELETE,
+          entityType: 'AuditLog',
+          entityId: 'RETENTION_PURGE',
+          description: `Audit log retention purge: deleted ${purgedCount} records older than ${cutoffDateFormatted}`,
+          metadata: {
+            purgedCount,
+            cutoffDate: cutoffDate.toISOString(),
+            requestedBy: email,
+            operation: 'RETENTION_PURGE',
+            retentionDays: days ?? undefined,
           },
-        });
-      }
-
-      return { purgedCount: deleteResult.count, purgeLog };
-    });
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+    }
 
     res.json({
       success: true,
-      message: `Successfully purged ${result.purgedCount} audit logs older than ${cutoffDateFormatted}`,
+      message: `Successfully purged ${purgedCount} audit logs older than ${cutoffDateFormatted}`,
       data: {
-        purgedCount: result.purgedCount,
+        purgedCount,
         cutoffDate: cutoffDate.toISOString(),
         cutoffDateFormatted,
+      },
+    });
+  }
+);
+
+// ─── Direct Administrative Clear Audit Log ───────────────────────
+
+/**
+ * GET /api/audit-logs/clear/preview
+ * Returns the exact scope of records that would be cleared vs preserved for this organization.
+ * Restricted to ORG_ADMIN and SUPER_ADMIN.
+ */
+router.get(
+  '/clear/preview',
+  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId } = authReq.user;
+
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, false);
+
+    const [totalRecords, statutoryCount] = await Promise.all([
+      prisma.auditLog.count({ where: { organizationId } }),
+      prisma.auditLog.count({ where: statutoryWhere }),
+    ]);
+
+    const eligibleToClear = Math.max(0, totalRecords - statutoryCount);
+
+    res.json({
+      success: true,
+      data: {
+        totalRecords,
+        eligibleToClear,
+        statutoryCount,
+        willPreserveStatutory: statutoryCount > 0,
+      },
+    });
+  }
+);
+
+/**
+ * POST /api/audit-logs/clear
+ * Clear audit logs for the organization upon explicit administrative confirmation.
+ * Strictly restricted to ORG_ADMIN and SUPER_ADMIN.
+ * 
+ * Safety & Compliance Rules:
+ * 1. Multi-tenant isolation: strictly operates on authReq.user.organizationId.
+ * 2. Requires explicit confirmation in request body ({ confirmed: true }).
+ * 3. Preserves statutory active financial & tax records (active Invoices, Payments, Statements, ZATCA).
+ * 4. Clears historical operational logs and traces of deleted entities.
+ * 5. Records an immutable administrative trace for audit accountability (Section 8).
+ * 6. Returns structured response with purgedCount, preservedCount, remainingCount.
+ */
+router.post(
+  '/clear',
+  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
+  async (req, res: Response) => {
+    const authReq = req as AuthenticatedRequest;
+    const { organizationId, id: userId, email } = authReq.user;
+    const {
+      confirmed,
+      confirmation,
+      preserveStatutory = true,
+      forceAll = false,
+      beforeDate,
+      recordAdministrativeLog = true,
+    } = req.body || {};
+
+    if (
+      confirmed !== true &&
+      confirmation !== true &&
+      req.body?.confirmToken !== 'CONFIRM_CLEAR_AUDIT_LOG'
+    ) {
+      throw new ValidationError(
+        'التأكيد الصريح مطلوب لتنفيذ تفريغ سجل التدقيق / Explicit confirmation is required to clear the audit log'
+      );
+    }
+
+    const statutoryWhere = await getStatutoryProtectionWhere(organizationId, false);
+
+    const [totalBefore, statutoryCount] = await Promise.all([
+      prisma.auditLog.count({ where: { organizationId } }),
+      prisma.auditLog.count({ where: statutoryWhere }),
+    ]);
+
+    if (totalBefore === 0) {
+      return res.json({
+        success: true,
+        message: 'سجل التدقيق فارغ بالفعل / Audit log is already empty',
+        data: {
+          totalBefore: 0,
+          purgedCount: 0,
+          preservedCount: 0,
+          remainingCount: 0,
+        },
+      });
+    }
+
+    // Cutoff execution timestamp: records accumulated up to execution timestamp (or beforeDate)
+    const cutoff = beforeDate ? new Date(beforeDate) : new Date();
+
+    let targetWhere: Prisma.AuditLogWhereInput = {
+      organizationId,
+      createdAt: { lte: cutoff },
+    };
+
+    // If preserveStatutory is requested and statutory records exist, exclude them from purge
+    if (preserveStatutory && !forceAll && statutoryCount > 0) {
+      targetWhere = {
+        organizationId,
+        createdAt: { lte: cutoff },
+        NOT: statutoryWhere,
+      };
+    }
+
+    const eligibleCount = await prisma.auditLog.count({ where: targetWhere });
+
+    if (eligibleCount === 0) {
+      return res.json({
+        success: true,
+        message: `لم يتم حذف أي سجلات: لا توجد سجلات مؤهلة للحذف، وجميع السجلات الحالية (${statutoryCount}) محمية نظامياً.`,
+        data: {
+          totalBefore,
+          eligibleCount: 0,
+          purgedCount: 0,
+          preservedCount: statutoryCount,
+          remainingCount: totalBefore,
+        },
+      });
+    }
+
+    let purgedCount = 0;
+    const BATCH_SIZE = 1000;
+    while (true) {
+      const batch = await prisma.auditLog.findMany({
+        where: targetWhere,
+        take: BATCH_SIZE,
+        select: { id: true },
+      });
+      if (batch.length === 0) break;
+      const ids = batch.map((r) => r.id);
+      const del = await prisma.auditLog.deleteMany({
+        where: { id: { in: ids } },
+      });
+      purgedCount += del.count;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    // Document cleanup in audit trail to preserve mandatory administrative evidence (Section 8)
+    let adminLogId = null;
+    if (recordAdministrativeLog && purgedCount > 0) {
+      const adminLog = await prisma.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          action: AuditAction.DELETE,
+          entityType: 'AuditLog',
+          entityId: 'AUDIT_LOG_CLEANUP',
+          description: `Administrative audit log cleanup executed: purged ${purgedCount} historical records. Preserved ${statutoryCount} active statutory business records.`,
+          metadata: {
+            purgedCount,
+            preservedCount: statutoryCount,
+            executionTimestamp: cutoff.toISOString(),
+            requestedBy: email,
+            operation: 'PERMANENT_CLEANUP',
+          },
+          ipAddress: req.ip || req.socket.remoteAddress,
+        },
+      });
+      adminLogId = adminLog.id;
+    }
+
+    const remainingCount = await prisma.auditLog.count({ where: { organizationId } });
+
+    logger.info(
+      `[AuditLog] Administrative clear executed: purged ${purgedCount} records for org ${organizationId} by admin ${email}. Preserved statutory: ${statutoryCount}. Remaining in DB: ${remainingCount}.`
+    );
+
+    res.json({
+      success: true,
+      message: `تم تفريغ ${purgedCount} سجل تدقيق بنجاح${
+        statutoryCount > 0
+          ? `، مع الحفاظ الكامل على ${statutoryCount} سجل مالي وضريبي مرتبط بالأعمال المعتمدة.`
+          : '.'
+      }`,
+      data: {
+        totalBefore,
+        eligibleCount,
+        purgedCount,
+        preservedCount: statutoryCount,
+        remainingCount,
+        cleanupAuditId: adminLogId,
+        timestamp: cutoff.toISOString(),
       },
     });
   }
@@ -769,7 +1535,9 @@ router.put(
 
     const days = parseInt(String(auditRetentionDays), 10);
     if (isNaN(days) || days < 30) {
-      throw new ValidationError('فترة حفظ السجلات يجب ألا تقل عن 30 يوماً للامتثال النظامي / Retention period must be at least 30 days');
+      throw new ValidationError(
+        'فترة حفظ السجلات يجب ألا تقل عن 30 يوماً للامتثال النظامي / Retention period must be at least 30 days'
+      );
     }
 
     const updated = await prisma.orgSettings.upsert({
@@ -792,7 +1560,9 @@ router.put(
         action: AuditAction.SETTINGS_UPDATE,
         entityType: 'OrganizationSettings',
         entityId: updated.id,
-        description: `Updated audit log retention policy: retentionDays = ${days}, autoCleanup = ${Boolean(autoCleanupAuditLogs)}`,
+        description: `Updated audit log retention policy: retentionDays = ${days}, autoCleanup = ${Boolean(
+          autoCleanupAuditLogs
+        )}`,
         metadata: {
           auditRetentionDays: days,
           autoCleanupAuditLogs: Boolean(autoCleanupAuditLogs),
@@ -808,91 +1578,6 @@ router.put(
       data: {
         auditRetentionDays: updated.auditRetentionDays,
         autoCleanupAuditLogs: updated.autoCleanupAuditLogs,
-      },
-    });
-  }
-);
-
-// ─── Reset Test Audit Logs (Development / Testing Only) ─────────
-
-/**
- * POST /api/audit-logs/reset-test-logs
- * Controlled developer/tester reset operation strictly forbidden in production.
- * Requirements:
- * 1. process.env.NODE_ENV !== 'production'.
- * 2. ORG_ADMIN or SUPER_ADMIN authorization.
- * 3. Explicit confirmation token: 'RESET_TEST_AUDIT_LOGS'.
- * 4. Preserves all business entities and statutory financial/tax records.
- * 5. Generates a permanent security audit record of the reset.
- */
-router.post(
-  '/reset-test-logs',
-  requireRole(UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN),
-  async (req, res: Response) => {
-    const authReq = req as AuthenticatedRequest;
-    const { organizationId, id: userId, email } = authReq.user;
-
-    // Strict Environment Guard
-    if (process.env.NODE_ENV === 'production') {
-      throw new AuthorizationError(
-        'عملية إعادة ضبط سجلات الفحص غير مسموحة نهائياً في بيئة الإنتاج / Reset test logs is strictly disabled in production environments'
-      );
-    }
-
-    const { confirmationToken, confirmToken } = req.body || {};
-    const token = (confirmationToken || confirmToken || '').trim();
-
-    if (token !== 'RESET_TEST_AUDIT_LOGS') {
-      throw new ValidationError(
-        'رمز التأكيد "RESET_TEST_AUDIT_LOGS" إلزامي لتنفيذ عملية إعادة ضبط سجلات الاختبار / Explicit confirmation token "RESET_TEST_AUDIT_LOGS" is required'
-      );
-    }
-
-    // Safety filter: NEVER delete statutory tax, invoice, payment, or statement records
-    const testLogsWhere: Prisma.AuditLogWhereInput = {
-      organizationId,
-      entityType: { notIn: STATUTORY_PROTECTED_ENTITY_TYPES },
-      action: { notIn: STATUTORY_PROTECTED_ACTIONS },
-    };
-
-    const eligibleTestCount = await prisma.auditLog.count({ where: testLogsWhere });
-
-    const result = await prisma.$transaction(async (tx) => {
-      const deleteResult = await tx.auditLog.deleteMany({
-        where: testLogsWhere,
-      });
-
-      // Immutable security log documenting the reset operation
-      const securityLog = await tx.auditLog.create({
-        data: {
-          organizationId,
-          userId,
-          action: AuditAction.RESET_TEST_LOGS,
-          entityType: 'AuditLog',
-          entityId: 'TEST_AUDIT_RESET',
-          description: `Reset test audit logs executed in ${process.env.NODE_ENV || 'development'} environment by admin ${email}: purged ${deleteResult.count} test/debug records. All statutory business, tax, and financial records were strictly preserved.`,
-          metadata: {
-            purgedCount: deleteResult.count,
-            environment: process.env.NODE_ENV || 'development',
-            performedBy: email,
-            timestamp: new Date().toISOString(),
-          },
-          ipAddress: req.ip || req.socket.remoteAddress,
-        },
-      });
-
-      return { purgedCount: deleteResult.count, securityLog };
-    });
-
-    const remainingProtected = await prisma.auditLog.count({ where: { organizationId } });
-
-    res.json({
-      success: true,
-      message: `تمت إعادة ضبط سجلات التدقيق للاختبار بنجاح: تم حذف ${result.purgedCount} سجل تجريبي مع الحفاظ الكامل على ${remainingProtected} سجل نظامي ومالي وضريبي.`,
-      data: {
-        purgedCount: result.purgedCount,
-        remainingProtectedCount: remainingProtected,
-        securityLogId: result.securityLog.id,
       },
     });
   }
