@@ -1,231 +1,180 @@
- # 🏗️ Bunyan — Construction Management & Financial System
+ # 🏗️ Bunyan | Construction Management System
 
-Bunyan is a web-based **Construction Management & Financial System** designed to help contracting companies manage their daily operations through a centralized and modern web application.
+Bunyan is a web application I’m building to make day-to-day operations in contracting companies easier to manage.
 
-The system focuses on connecting construction sites, work tracking, approval workflows, invoices, payments, and financial reporting in one integrated platform.
+The idea came from a practical business need: construction work, site records, approvals, invoices, and payments are closely connected, but managing them separately can make it difficult to keep track of progress and financial status.
 
-The project is developed using **Google Antigravity**, with **ChatGPT** serving as an AI-assisted development partner for requirements analysis, prompt engineering, debugging, architecture discussions, code review, and technical problem solving.
+Bunyan brings these activities together in one place, with a focus on work tracking, billing accuracy, and clearer financial reporting.
 
-## 🎯 Project Overview
+## 🎯 What the System Covers
 
-Bunyan provides an integrated platform for managing:
+The application is designed around the main workflows of a contracting business:
 
-* 📊 Dashboard & KPIs
-* 👥 Customer Management
-* 🏗️ Construction Sites & Project Information
-* 🛠️ Work Items Library
-* 📝 Work Entries & Quantity Tracking
-* ✅ Work Approval & Rejection Workflows
-* 🧾 Invoices & Billing
-* 💰 Payments & Collections
-* 🧮 VAT & Tax Invoice Calculations
-* 📈 Financial Analytics & Reports
-* 📑 Customer Statements & Outstanding Balances
-* 🔍 Audit Logs & Activity Tracking
-* ⚙️ Company Settings & Business Information
-* 🌐 Arabic & English Interface Support
-* 🖨️ Professional Invoice Printing & A4 Layouts
-* 🔐 Authentication & Access Control
+* 📊 **Dashboard & KPIs** — A consolidated view of operational and financial activity.
+* 👥 **Customer Management** — Maintain customer records and related business information.
+* 🏗️ **Site Management** — Organize construction sites and their associated work.
+* 🛠️ **Work Items Library** — Maintain reusable work items for construction and maintenance activities.
+* 📝 **Work Tracking** — Record completed work and quantities against specific sites.
+* ✅ **Approval Workflow** — Review work entries before they are used for billing.
+* 🧾 **Invoice Management** — Create and manage invoices based on business records.
+* 💰 **Payments & Collections** — Track received payments and outstanding balances.
+* 📈 **Financial Reports** — Review financial performance and monitor business activity.
+* 📑 **Customer Statements** — Follow customer balances and transaction history.
+* 🔍 **Audit Logs** — Track relevant system activities.
+* ⚙️ **Company Settings** — Manage company information and invoice details.
+* 🌐 **Arabic & English Support** — Support bilingual interfaces and right-to-left/left-to-right layouts.
+* 🖨️ **Invoice Printing** — Provide structured invoice layouts for A4 printing and PDF output.
 
-## 🛠️ Technologies & Tools
+## 🛠️ Technology Stack
+
+The project uses a JavaScript-based web architecture with separate frontend and backend components.
 
 ### Frontend
 
-* React-based web application
-* TypeScript / JavaScript, depending on the implemented modules
+* React-based UI
 * Vite
-* Modern component-based UI architecture
-* Responsive layouts
-* Arabic RTL & English LTR support
+* TypeScript and/or JavaScript, depending on the module
+* Component-based application structure
 
 ### Backend & Database
 
 * Node.js
-* Backend REST API
-* PostgreSQL-compatible database architecture
-* PGlite for the local development database environment
-* Database Migrations
-* Database Relationships & Data Integrity
-* Server-side Validation
+* REST API
+* PGlite for local database development
+* Database migrations and relational data management
 
-### Financial & Business Logic
-
-* Work Quantity Tracking
-* Approved Work-Based Billing
-* Invoice Calculations
-* VAT Rate Support
-* Payment & Collection Tracking
-* Outstanding Balance Monitoring
-* Audit Trail Management
-
-### Development & Engineering
+### Development Tools
 
 * Google Antigravity
 * ChatGPT
-* Git
-* GitHub
-* Browser DevTools
-* Automated Testing
-* Build Validation
+* Git & GitHub
+* Browser Developer Tools
+* Automated tests and build tools
 
-## 💡 Key Challenges & Solutions
+*The technology list reflects the intended project architecture and should be kept aligned with the actual dependencies and configuration in the repository.*
 
-### Work Approval & Invoice Integrity
+## 🧩 Engineering Challenges
 
-Construction billing requires a reliable connection between completed work, approval status, and invoice generation.
+### 1. Connecting Completed Work to Invoicing
 
-Bunyan is designed to use approved work records as the basis for billing, helping prevent unapproved quantities from being invoiced.
+One important part of a construction management system is making sure that recorded work and financial transactions stay connected.
 
-The objective is to maintain consistency between operational records and financial transactions.
+Bunyan is designed around a workflow in which work is recorded against a site, reviewed, and approved before being used for billing. This helps separate work that has merely been entered from work that is ready to be invoiced.
 
-### Quantity Tracking & Duplicate Billing Prevention
+### 2. Tracking Quantities Without Duplicate Billing
 
-Tracking completed quantities and previously billed quantities is essential in construction projects.
+Construction work may be completed and billed in stages, so recording the total quantity alone is not always enough.
 
-The system incorporates quantity and billing tracking to support accurate invoicing and reduce the risk of billing the same work more than once.
+The system includes quantity and billed-quantity tracking to support more accurate billing and help prevent previously billed work from being invoiced again. Validation must also account for concurrent requests and changes to work records.
 
-Validation and transaction integrity are important when multiple requests attempt to process the same work records.
+### 3. Keeping Financial Records Consistent
 
-### Invoice Calculations & VAT
+Invoices, payments, and outstanding balances depend on one another. A change in one area should not leave related financial information inconsistent.
 
-Invoices must present financial information clearly and calculate totals consistently.
+This makes validation, database relationships, and reliable business rules important parts of the implementation.
 
-Bunyan includes support for VAT-related invoice calculations and tax information, with attention to invoice accuracy, readable layouts, and structured financial records.
+### 4. Designing Invoices for Arabic and English
 
-Tax compliance requirements must be validated against the applicable regulations before production use.
+A bilingual invoice involves more than translating labels. Text direction, alignment, number formatting, and page layout all affect readability.
 
-### Arabic & English Invoice Layouts
+Bunyan aims to support Arabic and English invoice content, with appropriate RTL/LTR alignment and a clear layout for A4 printing.
 
-Bilingual business applications introduce layout challenges involving text direction, alignment, and document readability.
+### 5. Preserving Business History
 
-Bunyan aims to provide a professional experience for Arabic and English users, including RTL/LTR alignment and invoice layouts suitable for A4 printing and PDF output.
+Deleting records in a business application can have consequences when those records are linked to invoices, payments, or historical transactions.
 
-### Audit Logging & Data Integrity
-
-Financial and operational systems need traceability for important business activities.
-
-Audit logging helps record relevant system events, while data integrity controls help protect relationships between customers, sites, work records, invoices, and payments.
-
-Historical financial records should be preserved according to appropriate business rules rather than being deleted indiscriminately.
-
-### Local Development & Persistent Storage
-
-Local development and production hosting have different database and storage requirements.
-
-PGlite supports the local development environment, while production deployment requires a suitable persistent database configuration, secure environment variables, and tested backup and recovery procedures.
-
-The production architecture should be validated before moving business data to a cloud environment.
+Bunyan considers data relationships and historical records when handling business operations, with audit logging intended to improve traceability.
 
 ## 🧪 Testing & Validation
 
-Testing and validation should cover the application's critical business workflows, including:
+Testing is particularly important for workflows that affect financial data.
 
-* Authentication & Login
-* Customer Management
-* Construction Site Management
-* Work Items & Work Entries
-* Work Approval & Rejection
-* Quantity & Billing Validation
-* Invoice Creation & Calculations
-* VAT Calculations
-* Payment & Collection Tracking
-* Financial Reports & Dashboard Analytics
-* Audit Logging
-* Arabic & English UI Layouts
-* Invoice Preview & A4 Printing
-* Database Persistence
-* Application Build & Regression Testing
+The main areas to validate include:
 
-Automated test results and production build status should be verified against the current codebase before each release.
+* Authentication and access control
+* Customer and site management
+* Work entry and approval workflows
+* Quantity and billing validation
+* Invoice totals and VAT calculations
+* Payment recording and outstanding balances
+* Dashboard metrics and financial reports
+* Audit logging
+* Arabic and English layouts
+* Invoice preview and printing
+* Database persistence
+* Production builds and regression tests
 
-## 🚀 Development & Deployment Workflow
+Test coverage and results should be verified against the current repository before a release.
+
+## 🚀 Development Workflow
+
+The development process follows a practical cycle:
 
 ```text
-Business Analysis
+Business Requirements
         ↓
-Requirements Definition
+System Design
         ↓
-System Architecture
+Feature Implementation
         ↓
-Frontend & Backend Development
-        ↓
-Database Integration
-        ↓
-Business Logic Implementation
+Database & API Integration
         ↓
 Testing & Debugging
         ↓
-Security & Data Integrity Review
+Code Review & Refinement
         ↓
 Git & GitHub
         ↓
-Cloud Deployment Preparation
-        ↓
-Production Deployment
+Deployment Preparation
 ```
 
-## 🤖 AI-Assisted Development
+## 🤖 My Experience with AI-Assisted Development
 
-AI-assisted development is an important part of the Bunyan engineering workflow.
+I use **Google Antigravity** as a development environment for implementing features and working through changes in the codebase.
 
-**Google Antigravity** is used to support project implementation and code changes, while **ChatGPT** assists with:
+I also use **ChatGPT** as a technical partner for:
 
-* Business Requirements Analysis
-* Prompt Engineering
-* System Architecture Discussions
-* Debugging & Error Investigation
-* Code Review
-* Database Design Discussions
-* Financial Logic Validation
-* Security Review
-* Performance Optimization
-* Technical Problem Solving
+* Breaking down business requirements
+* Exploring architecture and implementation options
+* Writing and refining development prompts
+* Investigating errors and debugging issues
+* Reviewing business logic and database relationships
+* Identifying edge cases
+* Improving performance and maintainability
 
-The goal is not simply to generate code, but to understand the business requirements, evaluate implementation decisions, test solutions, and preserve the integrity of existing functionality.
+My focus is not just on getting a feature working. It is also on understanding why a solution works, checking how it affects existing functionality, and validating the result.
 
-## 🔒 Security & Data Integrity
+This project has been an opportunity to apply AI-assisted development to a real business workflow rather than treating AI as a code-generation tool alone.
 
-Security and data integrity are important considerations throughout the development process.
+## 🔐 Security & Data Integrity
 
-Key areas include:
+Because the application handles business and financial information, security and data integrity are important development priorities.
 
-* Secure Authentication & Authorization
-* Environment Variable Management
-* Server-Side Input Validation
-* Database Integrity
-* Protection of Sensitive Business Data
-* Safe Git Practices
-* Audit Trail Management
-* Persistent Storage & Backup Planning
+Areas requiring particular attention include authentication, authorization, server-side validation, environment configuration, database integrity, audit history, and backup and recovery.
 
-Production readiness requires a dedicated security review, verified access controls, and tested database backup and recovery procedures.
+Before production deployment, the application must be validated against the target hosting environment, including its database persistence and security requirements.
 
-## 🌍 Project Vision
+## 🗺️ Current Direction
 
-Bunyan aims to help contracting companies move away from fragmented spreadsheets and manual workflows toward a centralized digital system for construction operations and financial management.
+The project is being developed with a focus on reliable business workflows, clearer financial visibility, and maintainable architecture.
 
-By connecting work execution, approval workflows, invoicing, collections, and reporting, the platform is designed to improve operational visibility and financial control.
-
-**Bunyan — Building smarter construction management workflows.**
+The next stages include validating the deployment configuration, preparing persistent production database storage, and testing the application in its intended hosting environment.
 
 ## 🔗 Repository
 
-**GitHub Repository:**
-
+**GitHub:**
 https://github.com/MohammedHamza224/Bunyan
 
 ## 💼 Portfolio
 
 **Mohammed Hamza — Data Analytics Portfolio:**
+ https://mohammed-hamza-pro.lovable.app/
 
-https://vision-data-pro.lovable.app/
-
-## 👨‍💻 Author
+## 👨‍💻 About Me
 
 **Mohammed Hamza**
-
 Data Analyst | BI Analyst | AI-Assisted Development
 
 ---
 
-⭐ If you find this project useful or interesting, feel free to explore the repository and share your feedback.
+*Bunyan is an ongoing project focused on connecting construction operations with financial management in a single application.*
