@@ -17,6 +17,6 @@ export const prisma: PrismaClient =
         : ['warn', 'error'],
   });
 
-if (config.nodeEnv !== 'production') {
+if (config.nodeEnv !== 'production' || process.env.VERCEL) {
   global.__prisma = prisma;
 }

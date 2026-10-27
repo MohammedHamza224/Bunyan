@@ -29,10 +29,25 @@ import testDataRouter from './routes/testData';
 
 const app = express();
 
+// Trust reverse proxies (Vercel, AWS ALB, Nginx) for accurate client IP and rate limiting
+app.set('trust proxy', 1);
+
 // ── Security ──────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
-  origin: config.corsOrigins,
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (config.corsOrigins.includes(origin) || config.corsOrigins.includes('*')) {
+      return callback(null, true);
+    }
+    if (/^https:\/\/.*\.vercel\.app$/.test(origin)) {
+      return callback(null, true);
+    }
+    if (/^http:\/\/localhost(:\d+)?$/.test(origin) || /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
   credentials: true,
 }));
 
