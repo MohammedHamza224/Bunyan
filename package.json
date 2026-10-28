@@ -7,18 +7,19 @@
   ],
   "scripts": {
     "dev": "concurrently --kill-others-on-fail -p \"[{name}]\" -n \"DB,API,UI\" -c \"magenta,blue,cyan\" \"npm run db:server --workspace=packages/backend\" \"npm run dev --workspace=packages/backend\" \"npm run dev --workspace=packages/frontend\"",
-    "build": "npm run build --workspaces",
-    "build:prod": "npm run db:generate && npm run build",
-    "postinstall": "npm run db:generate",
+    "build": "npm run db:generate && npm run build --workspaces",
+    "build:prod": "npm run build",
     "test": "npm run test --workspaces --if-present",
     "db:migrate": "npm run db:migrate --workspace=packages/backend",
     "db:seed": "npm run db:seed --workspace=packages/backend",
     "db:studio": "npm run db:studio --workspace=packages/backend",
     "db:generate": "prisma generate --schema=packages/backend/prisma/schema.prisma"
   },
+  "dependencies": {
+    "prisma": "^5.22.0"
+  },
   "devDependencies": {
     "concurrently": "^9.1.0",
-    "prisma": "^5.22.0",
     "vercel": "^65.4.0"
   }
 }
