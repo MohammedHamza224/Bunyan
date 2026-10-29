@@ -19,7 +19,7 @@ export const logger = winston.createLogger({
     new winston.transports.Console({
       silent: config.isTest,
     }),
-    ...(config.isProd
+    ...(config.isProd && !process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME
       ? [
           new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
           new winston.transports.File({ filename: 'logs/combined.log' }),
