@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
+import { useDebounce } from '../../hooks/useDebounce'
 
 export function StatementsPage() {
   const { i18n } = useTranslation()
@@ -27,6 +28,7 @@ export function StatementsPage() {
   const isAr = i18n.language === 'ar'
 
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
   const [clientFilter, setClientFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
@@ -114,10 +116,10 @@ export function StatementsPage() {
 
   // Statements List Query
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['statements', { search, clientFilter, statusFilter, page }],
+    queryKey: ['statements', { search: debouncedSearch, clientFilter, statusFilter, page }],
     queryFn: async () => {
       const params: Record<string, any> = { page, limit: 15 }
-      if (search.trim()) params.search = search.trim()
+      if (debouncedSearch.trim()) params.search = debouncedSearch.trim()
       if (clientFilter) params.clientId = clientFilter
       if (statusFilter) params.status = statusFilter
       const res = await api.get('/statements', { params })

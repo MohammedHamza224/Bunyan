@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../store/authStore'
+import { useDebounce } from '../../hooks/useDebounce'
 import { AuditDetailModal } from '../../components/audit/AuditDetailModal'
 import { RecordLink } from '../../components/audit/RecordLink'
 import {
@@ -72,6 +73,7 @@ export function AuditLogsPage() {
 
   // Filter state
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
   const [category, setCategory] = useState<AuditCategory>('ALL')
   const [action, setAction] = useState('')
   const [dateFrom, setDateFrom] = useState('')
@@ -135,7 +137,7 @@ export function AuditLogsPage() {
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: [
       'auditLogs',
-      { category, action, entityType, actorUserId, dateFrom, dateTo, search, eligibility, page, limit },
+      { category, action, entityType, actorUserId, dateFrom, dateTo, search: debouncedSearch, eligibility, page, limit },
     ],
     queryFn: async () => {
       const params: Record<string, any> = { page, limit }
@@ -145,7 +147,7 @@ export function AuditLogsPage() {
       if (actorUserId) params.userId = actorUserId
       if (dateFrom) params.dateFrom = dateFrom
       if (dateTo) params.dateTo = dateTo
-      if (search.trim()) params.search = search.trim()
+      if (debouncedSearch.trim()) params.search = debouncedSearch.trim()
       if (eligibility) params.eligibility = eligibility
 
       const res = await api.get('/audit-logs', { params })

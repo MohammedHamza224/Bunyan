@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../store/authStore'
+import { useDebounce } from '../../hooks/useDebounce'
 import { ActionMenu } from '../../components/ui/ActionMenu'
 import { RecordActionModal, RecordActionType } from '../../components/ui/RecordActionModal'
 
@@ -33,6 +34,7 @@ export function ClientsPage() {
   const initialStatus = (searchParams.get('status') as any) || 'ACTIVE'
   const initialSearch = searchParams.get('search') || ''
   const [search, setSearch] = useState(initialSearch)
+  const debouncedSearch = useDebounce(search, 300)
   const [statusFilter, setStatusFilter] = useState<'ACTIVE' | 'ARCHIVED' | 'ALL'>(
     ['ACTIVE', 'ARCHIVED', 'ALL'].includes(initialStatus) ? initialStatus : 'ACTIVE'
   )
@@ -80,11 +82,11 @@ export function ClientsPage() {
   })
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['clients', { search, statusFilter, typeFilter, sortBy, sortOrder, page }],
+    queryKey: ['clients', { search: debouncedSearch, statusFilter, typeFilter, sortBy, sortOrder, page }],
     queryFn: async () => {
       const res = await api.get('/clients', {
         params: {
-          search: search || undefined,
+          search: debouncedSearch || undefined,
           status: statusFilter,
           clientType: typeFilter || undefined,
           sortBy,

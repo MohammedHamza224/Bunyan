@@ -68,6 +68,31 @@ export interface AuthenticatedRequest extends Request<Record<string, string>, an
   user: AuthenticatedUser;
 }
 
+interface CachedUserRecord {
+  user: {
+    id: string;
+    organizationId: string;
+    email: string;
+    role: UserRole;
+    permissions: string[];
+    nameAr: string;
+    nameEn: string | null;
+    isActive: boolean;
+  };
+  cachedAt: number;
+}
+
+const userAuthCache = new Map<string, CachedUserRecord>();
+const AUTH_CACHE_TTL_MS = config.isTest ? 0 : 30_000; // 30s cache in production to eliminate redundant remote DB roundtrips
+
+export function invalidateUserAuthCache(userId?: string) {
+  if (userId) {
+    userAuthCache.delete(userId);
+  } else {
+    userAuthCache.clear();
+  }
+}
+
 /**
  * Verify JWT access token and attach user + organizationId + effective permissions to request.
  * ALL organization-specific routes MUST use this middleware.
@@ -96,19 +121,33 @@ export const authenticate = async (
     throw new AuthenticationError('Invalid token payload: missing user identifier');
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      organizationId: true,
-      email: true,
-      role: true,
-      permissions: true,
-      nameAr: true,
-      nameEn: true,
-      isActive: true,
-    },
-  });
+  const cached = userAuthCache.get(userId);
+  let user: CachedUserRecord['user'];
+  if (cached && Date.now() - cached.cachedAt < AUTH_CACHE_TTL_MS) {
+    user = cached.user;
+  } else {
+    const dbUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        organizationId: true,
+        email: true,
+        role: true,
+        permissions: true,
+        nameAr: true,
+        nameEn: true,
+        isActive: true,
+      },
+    });
+
+    if (!dbUser || !dbUser.isActive) {
+      userAuthCache.delete(userId);
+      throw new AuthenticationError('User account is disabled or not found');
+    }
+
+    user = dbUser;
+    userAuthCache.set(userId, { user, cachedAt: Date.now() });
+  }
 
   if (!user || !user.isActive) {
     throw new AuthenticationError('User account is disabled or not found');
@@ -119,7 +158,7 @@ export const authenticate = async (
     throw new AuthenticationError('Token organization mismatch');
   }
 
-  const effectivePermissions = resolveUserPermissions(user.role, user.permissions);
+  const effectivePermissions = resolveUserPermissions(user.role, user.permissions || undefined);
 
   (req as AuthenticatedRequest).user = {
     id: user.id,

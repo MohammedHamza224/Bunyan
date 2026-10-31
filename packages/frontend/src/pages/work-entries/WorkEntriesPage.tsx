@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
+import { useDebounce } from '../../hooks/useDebounce'
 
 interface LineItemDraft {
   workItemTemplateId: string
@@ -51,6 +52,7 @@ export function WorkEntriesPage() {
 
   // Filters
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
   const [clientFilter, setClientFilter] = useState('')
   const [siteFilter, setSiteFilter] = useState('')
   const [itemFilter, setItemFilter] = useState('')
@@ -148,11 +150,11 @@ export function WorkEntriesPage() {
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: [
       'workEntries',
-      { search, clientFilter, siteFilter, itemFilter, statusFilter, dateFrom, dateTo, page, limit },
+      { search: debouncedSearch, clientFilter, siteFilter, itemFilter, statusFilter, dateFrom, dateTo, page, limit },
     ],
     queryFn: async () => {
       const params: Record<string, any> = { page, limit }
-      if (search.trim()) params.search = search.trim()
+      if (debouncedSearch.trim()) params.search = debouncedSearch.trim()
       if (clientFilter) params.clientId = clientFilter
       if (siteFilter) params.siteId = siteFilter
       if (itemFilter) params.workItemTemplateId = itemFilter

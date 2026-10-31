@@ -75,13 +75,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       try {
         const response = await api.post('/auth/refresh', { refreshToken })
-        const tokens = response.data?.data?.tokens || response.data?.tokens
+        const resData = response.data?.data || response.data
+        const tokens = resData?.tokens
+        const userData = resData?.user
         if (tokens?.accessToken && tokens?.refreshToken) {
           setAccessToken(tokens.accessToken)
           const rememberMe =
             typeof tokens.rememberMe === 'boolean' ? tokens.rememberMe : undefined
           setStoredRefreshToken(tokens.refreshToken, rememberMe)
-          await fetchCurrentUser()
+          if (userData) {
+            setUser(userData)
+          } else {
+            await fetchCurrentUser()
+          }
         } else {
           throw new Error('Missing tokens')
         }

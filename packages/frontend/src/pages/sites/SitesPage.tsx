@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../store/authStore'
+import { useDebounce } from '../../hooks/useDebounce'
 import { ActionMenu } from '../../components/ui/ActionMenu'
 import { RecordActionModal, RecordActionType } from '../../components/ui/RecordActionModal'
 import { GoogleMapsLocationPicker } from '../../components/sites/GoogleMapsLocationPicker'
@@ -29,6 +30,7 @@ export function SitesPage() {
   const isAdmin = user?.role === 'ORG_ADMIN'
 
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
   const [clientFilter, setClientFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [page, setPage] = useState(1)
@@ -75,11 +77,11 @@ export function SitesPage() {
 
   // Fetch Sites
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['sites', { search, clientFilter, statusFilter, page }],
+    queryKey: ['sites', { search: debouncedSearch, clientFilter, statusFilter, page }],
     queryFn: async () => {
       const res = await api.get('/sites', {
         params: {
-          search: search || undefined,
+          search: debouncedSearch || undefined,
           clientId: clientFilter || undefined,
           status: statusFilter,
           page,

@@ -332,7 +332,17 @@ export const authService = {
       });
     });
 
-    return { tokens: newTokens };
+    const userSafe = {
+      id: user.id,
+      email: user.email,
+      nameAr: user.nameAr,
+      nameEn: user.nameEn,
+      role: user.role,
+      permissions: resolveUserPermissions(user.role, user.permissions),
+      organizationId: user.organizationId,
+    };
+
+    return { user: userSafe, tokens: newTokens };
   },
 
   /**

@@ -164,8 +164,6 @@ export async function getDashboardAnalytics(
   }
 ) {
   const range = resolvePeriodRange(query.period, query.dateFrom, query.dateTo);
-  const orgSettings = await prisma.orgSettings.findUnique({ where: { organizationId } });
-  const defaultCurrency = orgSettings?.defaultCurrency || 'SAR';
   const filterCurrency = query.currency ? query.currency.trim().toUpperCase() : null;
 
   const issueDateFilter: Prisma.DateTimeFilter | undefined =
@@ -185,8 +183,10 @@ export async function getDashboardAnalytics(
       : undefined;
 
   const [
+    orgSettings,
     clientCount,
     activeSiteCount,
+    totalSiteCount,
     allSites,
     pendingApprovalCount,
     approvedAndPartialEntries,
@@ -204,14 +204,17 @@ export async function getDashboardAnalytics(
     recentPayments,
     recentActivity,
   ] = await Promise.all([
+    prisma.orgSettings.findUnique({ where: { organizationId } }),
     prisma.client.count({ where: { organizationId, status: 'ACTIVE' } }),
     prisma.site.count({ where: { organizationId, status: 'ACTIVE' } }),
+    prisma.site.count({ where: { organizationId } }),
     prisma.site.findMany({
       where: { organizationId },
       include: {
         client: { select: { id: true, nameAr: true, nameEn: true } },
       },
       orderBy: { createdAt: 'desc' },
+      take: 6,
     }),
     prisma.workEntry.count({
       where: { organizationId, status: WorkEntryStatus.PENDING_APPROVAL },
@@ -222,7 +225,17 @@ export async function getDashboardAnalytics(
         organizationId,
         status: { in: [WorkEntryStatus.APPROVED, WorkEntryStatus.PARTIALLY_BILLED] },
       },
-      include: {
+      select: {
+        id: true,
+        referenceNo: true,
+        itemNameAr: true,
+        itemNameEn: true,
+        workDate: true,
+        status: true,
+        quantity: true,
+        billedQuantity: true,
+        unitPrice: true,
+        unit: true,
         client: { select: { id: true, nameAr: true, nameEn: true } },
         site: { select: { id: true, nameAr: true, nameEn: true } },
       },
@@ -412,6 +425,7 @@ export async function getDashboardAnalytics(
     }
   }
 
+  const defaultCurrency = orgSettings?.defaultCurrency || 'SAR';
   const targetCurrency = filterCurrency || defaultCurrency;
 
   // 2. Statements in period (never added to invoices!)
@@ -744,15 +758,15 @@ export async function getDashboardAnalytics(
   ];
 
   // 8. Project & Operational Insights
-  const totalProjects = allSites.length;
-  const activeProjects = allSites.filter((s) => s.status === 'ACTIVE').length;
-  const completedProjects = allSites.filter((s) => s.status !== 'ACTIVE').length;
+  const totalProjects = totalSiteCount;
+  const activeProjects = activeSiteCount;
+  const completedProjects = Math.max(0, totalProjects - activeProjects);
 
   const projectInsights = {
     totalProjects,
     activeProjects,
     completedProjects,
-    projectsList: allSites.slice(0, 6).map((s) => {
+    projectsList: allSites.map((s) => {
       const siteUnbilled = unbilledWorkEntriesList.filter((w) => w.site?.id === s.id);
       const siteUnbilledSum = siteUnbilled.reduce(
         (acc, curr) => acc + (curr.unbilledAmount || 0),
@@ -836,8 +850,6 @@ export async function getDashboardAnalytics(
 
 export async function getInvoicesReport(organizationId: string, query: Record<string, any>) {
   const range = resolvePeriodRange(query.period, query.dateFrom, query.dateTo);
-  const orgSettings = await prisma.orgSettings.findUnique({ where: { organizationId } });
-  const defaultCurrency = orgSettings?.defaultCurrency || 'SAR';
 
   const page = Math.max(1, parseInt(query.page as string) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(query.limit as string) || 25));
@@ -903,8 +915,9 @@ export async function getInvoicesReport(organizationId: string, query: Record<st
     where.totalAmount = { ...(where.totalAmount as any), lte: new Decimal(max) };
   }
 
-  // Fetch matching invoices + all approved credit/debit notes for this org to compute netAmount per invoice
-  const [rawInvoices, allNotes] = await Promise.all([
+  // Fetch matching invoices + all approved credit/debit notes for this org + org settings in parallel
+  const [orgSettings, rawInvoices, allNotes] = await Promise.all([
+    prisma.orgSettings.findUnique({ where: { organizationId } }),
     prisma.invoice.findMany({
       where,
       include: {
@@ -944,6 +957,8 @@ export async function getInvoicesReport(organizationId: string, query: Record<st
       },
     }),
   ]);
+
+  const defaultCurrency = orgSettings?.defaultCurrency || 'SAR';
 
   const notesByParentId = new Map<string, { credit: Decimal; debit: Decimal }>();
   for (const note of allNotes) {

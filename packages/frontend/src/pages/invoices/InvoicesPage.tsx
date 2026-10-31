@@ -21,6 +21,7 @@ import {
 import { api } from '../../lib/api'
 import { formatCurrency, getCurrencySymbol } from '../../lib/utils'
 import { useAuth } from '../../hooks/useAuth'
+import { useDebounce } from '../../hooks/useDebounce'
 
 export function InvoicesPage() {
   const { t, i18n } = useTranslation()
@@ -36,6 +37,7 @@ export function InvoicesPage() {
     (typeof hasPermission === 'function' && hasPermission('MANAGE_SETTINGS'))
 
   const [search, setSearch] = useState('')
+  const debouncedSearch = useDebounce(search, 300)
   const [clientFilter, setClientFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('')
@@ -117,10 +119,10 @@ export function InvoicesPage() {
 
   // Invoices Query
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['invoices', { search, clientFilter, statusFilter, paymentStatusFilter, page }],
+    queryKey: ['invoices', { search: debouncedSearch, clientFilter, statusFilter, paymentStatusFilter, page }],
     queryFn: async () => {
       const params: Record<string, any> = { page, limit: 15 }
-      if (search.trim()) params.search = search.trim()
+      if (debouncedSearch.trim()) params.search = debouncedSearch.trim()
       if (clientFilter) params.clientId = clientFilter
       if (statusFilter) params.status = statusFilter
       if (paymentStatusFilter) params.paymentStatus = paymentStatusFilter
