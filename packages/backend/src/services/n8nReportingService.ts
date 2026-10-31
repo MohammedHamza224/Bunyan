@@ -44,29 +44,64 @@ function buildPaginationMeta(total: number, page: number, limit: number): Pagina
 
 /**
  * 1. WEEKLY FINANCIAL SUMMARY
- * Computes weekly financial KPIs (Monday to Sunday) for revenue, collections, and approved works.
+ * Computes weekly financial KPIs for revenue, collections, and approved works.
+ *
+ * Date range resolution (in priority order):
+ *   1. Explicit range: startDate + endDate  → use the supplied boundaries directly.
+ *   2. Reference date: weekDate             → calculate the Mon–Sun week that contains it.
+ *   3. Default                              → calculate the Mon–Sun week that contains today.
  */
 export async function getWeeklyFinancialSummary(
   organizationId: string,
   query: {
+    startDate?: string;
+    endDate?: string;
     weekDate?: string;
     currency?: string;
   }
 ) {
-  const refDate = query.weekDate ? new Date(query.weekDate) : new Date();
-  if (isNaN(refDate.getTime())) {
-    throw new ValidationError('Invalid weekDate parameter: must be a valid ISO date');
+  let monday: Date;
+  let sunday: Date;
+
+  if (query.startDate || query.endDate) {
+    // Explicit date range mode — both boundaries are required together
+    if (!query.startDate || !query.endDate) {
+      throw new ValidationError('Both startDate and endDate are required when using an explicit date range');
+    }
+
+    const parsedStart = new Date(query.startDate);
+    const parsedEnd   = new Date(query.endDate);
+
+    if (isNaN(parsedStart.getTime())) {
+      throw new ValidationError('Invalid startDate parameter: must be a valid ISO date (YYYY-MM-DD)');
+    }
+    if (isNaN(parsedEnd.getTime())) {
+      throw new ValidationError('Invalid endDate parameter: must be a valid ISO date (YYYY-MM-DD)');
+    }
+    if (parsedStart > parsedEnd) {
+      throw new ValidationError('startDate must be on or before endDate');
+    }
+
+    // Normalise to full UTC days so time component of the input string is irrelevant
+    monday = new Date(Date.UTC(parsedStart.getUTCFullYear(), parsedStart.getUTCMonth(), parsedStart.getUTCDate(), 0, 0, 0, 0));
+    sunday = new Date(Date.UTC(parsedEnd.getUTCFullYear(),   parsedEnd.getUTCMonth(),   parsedEnd.getUTCDate(),   23, 59, 59, 999));
+  } else {
+    // Reference-date / default mode — calculate Mon–Sun of the given (or current) week
+    const refDate = query.weekDate ? new Date(query.weekDate) : new Date();
+    if (isNaN(refDate.getTime())) {
+      throw new ValidationError('Invalid weekDate parameter: must be a valid ISO date (YYYY-MM-DD)');
+    }
+
+    const day = refDate.getUTCDay(); // 0 = Sunday, 1 = Monday
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    monday = new Date(Date.UTC(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate() + diffToMonday, 0, 0, 0, 0));
+    sunday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + 6, 23, 59, 59, 999));
   }
 
-  // Calculate Monday 00:00:00 to Sunday 23:59:59 of the reference date
-  const day = refDate.getUTCDay(); // 0 is Sunday, 1 is Monday
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-  const monday = new Date(Date.UTC(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate() + diffToMonday, 0, 0, 0, 0));
-  const sunday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + 6, 23, 59, 59, 999));
-
-  // Prior week range for comparative analysis
-  const priorMonday = new Date(monday.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const priorSunday = new Date(sunday.getTime() - 7 * 24 * 60 * 60 * 1000);
+  // Calculate the equivalent prior period of the same length for trend comparison
+  const periodLengthMs = sunday.getTime() - monday.getTime() + 1;
+  const priorMonday = new Date(monday.getTime() - periodLengthMs);
+  const priorSunday = new Date(sunday.getTime() - periodLengthMs);
 
   const orgSettings = await prisma.orgSettings.findUnique({
     where: { organizationId },

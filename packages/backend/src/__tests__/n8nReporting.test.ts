@@ -237,6 +237,52 @@ describe('Secure n8n Reporting API & Integration Verification', () => {
       expect(res.body.data.financials.statementsIssuedValue).toBe(9200);
     });
 
+    it('1b. GET /api/reporting/v1/weekly-summary respects explicit startDate and endDate', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary?startDate=2026-10-19&endDate=2026-10-25')
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.weekRange).toEqual({
+        startDate: '2026-10-19',
+        endDate:   '2026-10-25',
+      });
+      // Fixtures were created today (2026-10-31), so a past week should return 0 revenue
+      expect(res.body.data.financials.netInvoicedRevenue).toBe(0);
+      expect(res.body.data.financials.collectionsTotal).toBe(0);
+    });
+
+    it('1c. GET /api/reporting/v1/weekly-summary respects weekDate reference parameter', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary?weekDate=2026-10-21') // Wednesday of week 2026-10-19..25
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.weekRange).toEqual({
+        startDate: '2026-10-19',
+        endDate:   '2026-10-25',
+      });
+    });
+
+    it('1d. GET /api/reporting/v1/weekly-summary rejects startDate > endDate with 400', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary?startDate=2026-10-26&endDate=2026-10-19')
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
+    it('1e. GET /api/reporting/v1/weekly-summary rejects partial range (only startDate) with 400', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary?startDate=2026-10-19')
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+    });
+
     it('2. GET /api/reporting/v1/monthly-summary returns collection rate and status distribution', async () => {
       const res = await request
         .get('/api/reporting/v1/monthly-summary')

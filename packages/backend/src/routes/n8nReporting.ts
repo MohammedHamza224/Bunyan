@@ -65,13 +65,19 @@ router.get('/health', (req, res: Response) => {
 /**
  * 1. WEEKLY FINANCIAL SUMMARY
  * GET /weekly-summary
- * Query params: weekDate (YYYY-MM-DD), currency
+ * Query params (pick one mode):
+ *   Explicit range : startDate=YYYY-MM-DD & endDate=YYYY-MM-DD  (highest priority)
+ *   Reference date : weekDate=YYYY-MM-DD  (returns the Mon–Sun week that contains it)
+ *   Default        : no date params       (returns the current Mon–Sun week)
+ * Optional: currency=SAR|USD|…
  */
 router.get('/weekly-summary', async (req, res: Response) => {
   const authReq = req as ReportingRequest;
   const data = await getWeeklyFinancialSummary(authReq.reportingAuth.organizationId, {
-    weekDate: req.query.weekDate as string | undefined,
-    currency: req.query.currency as string | undefined,
+    startDate: req.query.startDate as string | undefined,
+    endDate:   req.query.endDate   as string | undefined,
+    weekDate:  req.query.weekDate  as string | undefined,
+    currency:  req.query.currency  as string | undefined,
   });
   sendReportingResponse(authReq, res, data);
 });
