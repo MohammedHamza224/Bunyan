@@ -283,6 +283,30 @@ describe('Secure n8n Reporting API & Integration Verification', () => {
       expect(res.body.success).toBe(false);
     });
 
+    it('1f. GET /api/reporting/v1/weekly-summary supports dateField=createdAt query parameter', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary?dateField=createdAt')
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.dateField).toBe('createdAt');
+      // Created today in test fixture:
+      expect(res.body.data.financials.netInvoicedRevenue).toBe(11500);
+      expect(res.body.data.financials.collectionsTotal).toBe(5000);
+    });
+
+    it('1g. GET /api/reporting/v1/weekly-summary uses net taxableAmount (reconciling discounts)', async () => {
+      const res = await request
+        .get('/api/reporting/v1/weekly-summary')
+        .set('X-API-Key', `test-api-key-org-${orgA.orgId}`);
+
+      expect(res.status).toBe(200);
+      // taxableSubtotal (10000) + vatAmount (1500) === netInvoicedRevenue (11500)
+      const { invoicedTaxableSubtotal, invoicedVatAmount, netInvoicedRevenue } = res.body.data.financials;
+      expect(invoicedTaxableSubtotal + invoicedVatAmount).toBe(netInvoicedRevenue);
+    });
+
     it('2. GET /api/reporting/v1/monthly-summary returns collection rate and status distribution', async () => {
       const res = await request
         .get('/api/reporting/v1/monthly-summary')

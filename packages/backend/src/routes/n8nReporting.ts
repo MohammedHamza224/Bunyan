@@ -69,7 +69,7 @@ router.get('/health', (req, res: Response) => {
  *   Explicit range : startDate=YYYY-MM-DD & endDate=YYYY-MM-DD  (highest priority)
  *   Reference date : weekDate=YYYY-MM-DD  (returns the Mon–Sun week that contains it)
  *   Default        : no date params       (returns the current Mon–Sun week)
- * Optional: currency=SAR|USD|…
+ * Optional: currency=SAR|USD|…, dateField=business|createdAt
  */
 router.get('/weekly-summary', async (req, res: Response) => {
   const authReq = req as ReportingRequest;
@@ -78,6 +78,7 @@ router.get('/weekly-summary', async (req, res: Response) => {
     endDate:   req.query.endDate   as string | undefined,
     weekDate:  req.query.weekDate  as string | undefined,
     currency:  req.query.currency  as string | undefined,
+    dateField: req.query.dateField as 'business' | 'createdAt' | undefined,
   });
   sendReportingResponse(authReq, res, data);
 });
@@ -85,13 +86,14 @@ router.get('/weekly-summary', async (req, res: Response) => {
 /**
  * 2. MONTHLY FINANCIAL SUMMARY
  * GET /monthly-summary
- * Query params: month (YYYY-MM), currency
+ * Query params: month (YYYY-MM), currency, dateField (business|createdAt)
  */
 router.get('/monthly-summary', async (req, res: Response) => {
   const authReq = req as ReportingRequest;
   const data = await getMonthlyFinancialSummary(authReq.reportingAuth.organizationId, {
-    month: req.query.month as string | undefined,
-    currency: req.query.currency as string | undefined,
+    month:     req.query.month as string | undefined,
+    currency:  req.query.currency as string | undefined,
+    dateField: req.query.dateField as 'business' | 'createdAt' | undefined,
   });
   sendReportingResponse(authReq, res, data);
 });

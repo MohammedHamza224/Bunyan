@@ -58,6 +58,7 @@ export async function getWeeklyFinancialSummary(
     endDate?: string;
     weekDate?: string;
     currency?: string;
+    dateField?: 'business' | 'createdAt';
   }
 ) {
   let monday: Date;
@@ -109,6 +110,9 @@ export async function getWeeklyFinancialSummary(
   });
   const currency = query.currency?.trim().toUpperCase() || orgSettings?.defaultCurrency || 'SAR';
 
+  // Support querying by record insertion date (createdAt) or business accounting dates (default)
+  const isCreatedAt = query.dateField === 'createdAt';
+
   // Execute parallel queries for the current week and prior week
   const [
     currentInvoices,
@@ -125,13 +129,16 @@ export async function getWeeklyFinancialSummary(
       where: {
         organizationId,
         status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
-        issueDate: { gte: monday, lte: sunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: monday, lte: sunday } }
+          : { issueDate: { gte: monday, lte: sunday } }),
       },
       select: {
         id: true,
         referenceNo: true,
         invoiceType: true,
         subtotal: true,
+        taxableAmount: true,
         vatAmount: true,
         totalAmount: true,
         paidAmount: true,
@@ -145,7 +152,9 @@ export async function getWeeklyFinancialSummary(
       where: {
         organizationId,
         status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
-        issueDate: { gte: priorMonday, lte: priorSunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: priorMonday, lte: priorSunday } }
+          : { issueDate: { gte: priorMonday, lte: priorSunday } }),
       },
       select: { totalAmount: true, invoiceType: true },
     }),
@@ -153,7 +162,9 @@ export async function getWeeklyFinancialSummary(
     prisma.payment.findMany({
       where: {
         organizationId,
-        paymentDate: { gte: monday, lte: sunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: monday, lte: sunday } }
+          : { paymentDate: { gte: monday, lte: sunday } }),
       },
       select: { id: true, amount: true, method: true, paymentDate: true },
     }),
@@ -161,7 +172,9 @@ export async function getWeeklyFinancialSummary(
     prisma.payment.findMany({
       where: {
         organizationId,
-        paymentDate: { gte: priorMonday, lte: priorSunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: priorMonday, lte: priorSunday } }
+          : { paymentDate: { gte: priorMonday, lte: priorSunday } }),
       },
       select: { amount: true },
     }),
@@ -170,7 +183,9 @@ export async function getWeeklyFinancialSummary(
       where: {
         organizationId,
         status: { in: [WorkEntryStatus.APPROVED, WorkEntryStatus.PARTIALLY_BILLED, WorkEntryStatus.FULLY_BILLED] },
-        workDate: { gte: monday, lte: sunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: monday, lte: sunday } }
+          : { workDate: { gte: monday, lte: sunday } }),
       },
       select: { quantity: true, unitPrice: true },
     }),
@@ -179,7 +194,9 @@ export async function getWeeklyFinancialSummary(
       where: {
         organizationId,
         status: { in: [WorkEntryStatus.APPROVED, WorkEntryStatus.PARTIALLY_BILLED, WorkEntryStatus.FULLY_BILLED] },
-        workDate: { gte: priorMonday, lte: priorSunday },
+        ...(isCreatedAt
+          ? { createdAt: { gte: priorMonday, lte: priorSunday } }
+          : { workDate: { gte: priorMonday, lte: priorSunday } }),
       },
       select: { quantity: true, unitPrice: true },
     }),
@@ -196,8 +213,10 @@ export async function getWeeklyFinancialSummary(
     prisma.statement.findMany({
       where: {
         organizationId,
-        status: { in: [StatementStatus.APPROVED, StatementStatus.INVOICED] },
-        issueDate: { gte: monday, lte: sunday },
+        status: { in: [StatementStatus.APPROVED, StatementStatus.PARTIALLY_INVOICED, StatementStatus.INVOICED] },
+        ...(isCreatedAt
+          ? { createdAt: { gte: monday, lte: sunday } }
+          : { issueDate: { gte: monday, lte: sunday } }),
       },
       select: { id: true, totalAmount: true },
     }),
@@ -210,11 +229,11 @@ export async function getWeeklyFinancialSummary(
 
   for (const inv of currentInvoices) {
     if (inv.invoiceType === InvoiceType.CREDIT_NOTE) {
-      invoicedTaxable = invoicedTaxable.sub(inv.subtotal);
+      invoicedTaxable = invoicedTaxable.sub(inv.taxableAmount);
       invoicedVat = invoicedVat.sub(inv.vatAmount);
       netInvoicedTotal = netInvoicedTotal.sub(inv.totalAmount);
     } else {
-      invoicedTaxable = invoicedTaxable.add(inv.subtotal);
+      invoicedTaxable = invoicedTaxable.add(inv.taxableAmount);
       invoicedVat = invoicedVat.add(inv.vatAmount);
       netInvoicedTotal = netInvoicedTotal.add(inv.totalAmount);
     }
@@ -274,6 +293,7 @@ export async function getWeeklyFinancialSummary(
       startDate: monday.toISOString().slice(0, 10),
       endDate: sunday.toISOString().slice(0, 10),
     },
+    dateField: isCreatedAt ? 'createdAt' : 'business',
     currency,
     financials: {
       netInvoicedRevenue: Number(roundDecimal(netInvoicedTotal, 2)),
@@ -305,6 +325,7 @@ export async function getMonthlyFinancialSummary(
   query: {
     month?: string; // YYYY-MM
     currency?: string;
+    dateField?: 'business' | 'createdAt';
   }
 ) {
   let dateFrom: Date;
@@ -326,6 +347,9 @@ export async function getMonthlyFinancialSummary(
   });
   const currency = query.currency?.trim().toUpperCase() || orgSettings?.defaultCurrency || 'SAR';
 
+  // Support querying by record insertion date (createdAt) or business accounting dates (default)
+  const isCreatedAt = query.dateField === 'createdAt';
+
   const [
     monthInvoices,
     monthPayments,
@@ -338,13 +362,16 @@ export async function getMonthlyFinancialSummary(
       where: {
         organizationId,
         status: { in: [InvoiceStatus.APPROVED, InvoiceStatus.SENT] },
-        issueDate: { gte: dateFrom, lte: dateTo },
+        ...(isCreatedAt
+          ? { createdAt: { gte: dateFrom, lte: dateTo } }
+          : { issueDate: { gte: dateFrom, lte: dateTo } }),
       },
       select: {
         id: true,
         referenceNo: true,
         invoiceType: true,
         subtotal: true,
+        taxableAmount: true,
         vatAmount: true,
         totalAmount: true,
         paidAmount: true,
@@ -356,7 +383,9 @@ export async function getMonthlyFinancialSummary(
     prisma.payment.findMany({
       where: {
         organizationId,
-        paymentDate: { gte: dateFrom, lte: dateTo },
+        ...(isCreatedAt
+          ? { createdAt: { gte: dateFrom, lte: dateTo } }
+          : { paymentDate: { gte: dateFrom, lte: dateTo } }),
       },
       select: { amount: true, method: true },
     }),
@@ -364,7 +393,9 @@ export async function getMonthlyFinancialSummary(
       where: {
         organizationId,
         status: { in: [WorkEntryStatus.APPROVED, WorkEntryStatus.PARTIALLY_BILLED, WorkEntryStatus.FULLY_BILLED] },
-        workDate: { gte: dateFrom, lte: dateTo },
+        ...(isCreatedAt
+          ? { createdAt: { gte: dateFrom, lte: dateTo } }
+          : { workDate: { gte: dateFrom, lte: dateTo } }),
       },
       select: { quantity: true, unitPrice: true },
     }),
@@ -400,7 +431,7 @@ export async function getMonthlyFinancialSummary(
     if (!isCreditNote) {
       grossInvoiceValue = grossInvoiceValue.add(inv.totalAmount);
     }
-    netTaxableSubtotal = netTaxableSubtotal.add(inv.subtotal.mul(sign));
+    netTaxableSubtotal = netTaxableSubtotal.add(inv.taxableAmount.mul(sign));
     netVatAmount = netVatAmount.add(inv.vatAmount.mul(sign));
     netInvoiceRevenue = netInvoiceRevenue.add(inv.totalAmount.mul(sign));
 
@@ -442,6 +473,7 @@ export async function getMonthlyFinancialSummary(
       startDate: dateFrom.toISOString().slice(0, 10),
       endDate: dateTo.toISOString().slice(0, 10),
     },
+    dateField: isCreatedAt ? 'createdAt' : 'business',
     currency,
     financials: {
       netInvoicedRevenue: Number(roundDecimal(netInvoiceRevenue, 2)),
