@@ -50,6 +50,11 @@ export const config = {
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
 
+  // Reporting & n8n Integration (Secure API Keys)
+  n8nReportingApiKey: process.env.N8N_REPORTING_API_KEY || process.env.REPORTING_API_KEY || '',
+  n8nReportingOrgId: process.env.N8N_ORGANIZATION_ID || process.env.REPORTING_ORGANIZATION_ID || '',
+  reportingApiKeysJson: process.env.REPORTING_API_KEYS || '',
+
   isProd,
   isTest,
 };

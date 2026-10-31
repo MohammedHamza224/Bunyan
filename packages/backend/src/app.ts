@@ -26,6 +26,7 @@ import reportRouter from './routes/reports';
 import auditLogRouter from './routes/auditLogs';
 import unitsRouter from './routes/units';
 import testDataRouter from './routes/testData';
+import n8nReportingRouter from './routes/n8nReporting';
 
 const app = express();
 
@@ -130,6 +131,8 @@ app.use('/api/reports', reportRouter);
 app.use('/api/audit-logs', auditLogRouter);
 app.use('/api/units', unitsRouter);
 app.use('/api/test-data', testDataRouter);
+app.use('/api/reporting/v1', n8nReportingRouter);
+app.use('/api/n8n', n8nReportingRouter);
 
 // ── Error handling ─────────────────────────────────────────────
 app.use(notFound);
